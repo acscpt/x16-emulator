@@ -13,14 +13,9 @@
 #define _DEBUGGER_H
 
 #include <SDL.h>
+#include "debugger_core.h"           // struct breakpoint, DMODE_* (re-exported)
 
 extern int showDebugOnRender;
-
-struct breakpoint {
-	int pc;
-	uint8_t bank;
-	int x16Bank;
-};
 
 void DEBUGRenderDisplay(int width,int height);
 void DEBUGBreakToDebugger(void);
@@ -39,9 +34,5 @@ void DEBUGFreeUI();
 #define DBG_MEMX 		(1)										// Memory Display starts here
 #define DBG_ZP_REG     (45)                             // Zero page registers start here
 #define DBG_VERA_REGX   (45)                             // VERA registers start here
-
-#define DMODE_STOP 		(0)										// Debugger is waiting for action.
-#define DMODE_STEP 		(1)										// Debugger is doing a single step
-#define DMODE_RUN 		(2)										// Debugger is running normally.
 
 #endif

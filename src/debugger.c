@@ -118,13 +118,15 @@ uint8_t currentPCBank = 0;                            // Current disassembly PC 
 int currentData = 0;                                  // Current data display address (RAM or VRAM).
 int currentPCX16Bank = -1;                            // Current disassembly X16 RAM/ROM bank, -1 unless $A000-$FFFF, .K = 0
 int currentX16Bank = -1;                              // Current data display (memory dump) X16 RAM/ROM bank
-int currentMode = DMODE_RUN;                          // Start running.
-uint32_t debugCPUClocks = 0;
 
 int dumpmode          = DDUMP_RAM;
 
-struct breakpoint breakPoint = { -1, 0, -1 };         // User Break
-struct breakpoint stepBreakPoint = { -1, 0, -1 };     // Single step break.
+// State machine, breakpoints (user + step), and step/run clock tracking
+// moved to debugger_core.c in Phase 2 of the SDL decoupling refactor.
+// The variables above (currentPC etc.) are SDL panel-cursor state and
+// remain here; the core surfaces its state via dbg_get_mode(),
+// dbg_get_breakpoint(), and dbg_clocks_since_resume() for the render path.
+
 char cmdLine[64]= "";                                 // command line buffer
 int currentPosInLine= 0;                              // cursor position in the buffer (NOT USED _YET_)
 int currentLineLen= 0;                                // command line buffer length
@@ -132,10 +134,6 @@ int currentLineLen= 0;                                // command line buffer len
 int    oldRegisters[DBGMAX_ZERO_PAGE_REGISTERS];      // Old ZP Register values, for change detection
 char * oldRegChange[DBGMAX_ZERO_PAGE_REGISTERS];      // Change notification flags for output
 int    oldRegisterTicks = 0;                          // Last PC when change notification was run
-
-//
-//		This flag controls
-//
 
 SDL_Renderer *dbgRenderer;                            // Renderer passed in.
 
@@ -149,62 +147,56 @@ static inline int getCurrentBank(int pc, uint8_t bank) {
 
 // *******************************************************************************************
 //
-//      	This determines if we have hit a breakpoint, both in pc and bank
+//			Frontend callbacks. Called by debugger_core when the state machine
+//			transitions into / out of the stopped state. Update SDL panel
+//			cursors here so the render path picks up the new PC immediately.
 //
 // *******************************************************************************************
 
-static inline bool hitBreakpoint(int pc, uint8_t bank, struct breakpoint bp) {
-	if ((pc == bp.pc) && bank == bp.bank && getCurrentBank(pc, bank) == bp.x16Bank) {
-		return true;
-	}
-	return false;
+void dbg_frontend_on_break(dbg_break_reason_t reason, uint8_t bank, uint16_t pc) {
+	(void)reason; // Phase 2 SDL frontend does not differentiate by reason.
+	currentPC        = pc;
+	currentPCBank    = bank;
+	currentPCX16Bank = getCurrentBank(pc, bank);
+}
+
+void dbg_frontend_on_resume(void) {
+	// SDL frontend has no extra work here -- DEBUGGetCurrentStatus mirrors
+	// the core's mode into showDebugOnRender on every tick.
 }
 
 // *******************************************************************************************
 //
-//			This is used to determine who is in control. If it returns zero then
-//			everything runs normally till the next call.
-//			If it returns +ve, then it will update the video, and loop round.
-//			If it returns -ve, then exit.
+//			Main-loop hook. Drives the core state machine via dbg_tick(),
+//			pumps SDL events while stopped, polls F12/TAB. Return-code
+//			contract preserved from the pre-refactor version:
+//			   0: run normally
+//			  +1: stay in debug mode and re-render
+//			  -1: exit
 //
 // *******************************************************************************************
 
 int  DEBUGGetCurrentStatus(void) {
 
 	SDL_Event event;
-	if (currentPC < 0) currentPC = regs.pc;                                      // Initialise current PC displayed.
+	if (currentPC < 0) currentPC = regs.pc;                                      // Lazy init of panel cursor.
 
-	if (currentMode == DMODE_STEP) {                                // Single step before
-		if (currentPC != regs.pc || currentPCBank != regs.k || currentPCX16Bank != getCurrentBank(regs.pc, regs.k)) { // Ensure that the PC moved
-			currentPC = regs.pc;                                    // Update current PC
-			currentPCBank = regs.k;
-			currentPCX16Bank = getCurrentBank(regs.pc, regs.k);     // Update the bank if we are in upper memory.
-			currentMode = DMODE_STOP;                               // So now stop, as we've done it.
-		}
-	}
+	// Advance the state machine. Detects step completion and breakpoint
+	// hits; fires dbg_frontend_on_break() on transitions into stopped.
+	dbg_tick_t tick = dbg_tick();
+	(void)tick; // Phase 2: dbg_tick never returns QUIT; reserved for Phase 3.
 
-	if ((currentMode != DMODE_STOP) && (hitBreakpoint(regs.pc, regs.k, breakPoint) || hitBreakpoint(regs.pc, regs.k, stepBreakPoint))) {       // Hit a breakpoint.
-		currentPC = regs.pc;                                    // Update current PC
-		currentPCBank = regs.k;
-		currentPCX16Bank = getCurrentBank(regs.pc, regs.k);     // Update the bank if we are in upper memory.
-		currentMode = DMODE_STOP;                               // So now stop, as we've done it.
-		stepBreakPoint.pc = -1;                                 // Clear step breakpoint.
-		stepBreakPoint.bank = 0;
-		stepBreakPoint.x16Bank = -1;
-	}
-
-	if (SDL_GetKeyboardState(NULL)[DBGSCANKEY_BRK]) {            // Stop on break pressed.
-		currentMode = DMODE_STOP;
-		currentPC = regs.pc;                                     // Set the PC to what it is.
-		currentPCBank = regs.k;
-		currentPCX16Bank = getCurrentBank(regs.pc, regs.k);      // Update the bank if we are in upper memory.
+	// F12 = force break. SDL keyboard-state poll runs outside the event
+	// queue, matching pre-refactor side-channel behavior.
+	if (SDL_GetKeyboardState(NULL)[DBGSCANKEY_BRK]) {
+		dbg_break(DBG_BREAK_USER);
 	}
 
 	if (currentPCX16Bank<0 && currentPC >= 0xA000 && currentPCBank == 0) {
 		currentPCX16Bank = currentPC < 0xC000 ? memory_get_ram_bank() : memory_get_rom_bank();
 	}
 
-	if (currentMode != DMODE_RUN) {                                     // Not running, we own the keyboard.
+	if (dbg_get_mode() != DMODE_RUN) {                                  // Not running, we own the keyboard.
 		showFullDisplay =                                               // Check showing screen.
 					SDL_GetKeyboardState(NULL)[DBGSCANKEY_SHOW];
 		while (SDL_PollEvent(&event)) {                                 // We now poll events here.
@@ -223,8 +215,9 @@ int  DEBUGGetCurrentStatus(void) {
 		}
 	}
 
-	showDebugOnRender = (currentMode != DMODE_RUN);                         // Do we draw it - only in RUN mode.
-	if (currentMode == DMODE_STOP) {                                        // We're in charge.
+	int mode = dbg_get_mode();
+	showDebugOnRender = (mode != DMODE_RUN);                                // Do we draw it - only in RUN mode.
+	if (mode == DMODE_STOP) {                                               // We're in charge.
 		video_update();
 		SDL_Delay(10);
 		return 1;
@@ -258,7 +251,7 @@ void DEBUGFreeUI() {
 // *******************************************************************************************
 
 void DEBUGSetBreakPoint(struct breakpoint newBreakPoint) {
-	breakPoint = newBreakPoint;
+	dbg_set_breakpoint(newBreakPoint);
 }
 
 // *******************************************************************************************
@@ -268,10 +261,7 @@ void DEBUGSetBreakPoint(struct breakpoint newBreakPoint) {
 // *******************************************************************************************
 
 void DEBUGBreakToDebugger(void) {
-	currentMode = DMODE_STOP;
-	currentPC = regs.pc;
-	currentPCBank = regs.k;
-	currentPCX16Bank = getCurrentBank(regs.pc, regs.k);
+	dbg_break(DBG_BREAK_STP_OPCODE);
 }
 
 // *******************************************************************************************
@@ -281,54 +271,42 @@ void DEBUGBreakToDebugger(void) {
 // *******************************************************************************************
 
 static void DEBUGHandleKeyEvent(SDL_Keycode key, int isShift) {
-	int opcode;
 
 	switch(key) {
 
 		case DBGKEY_STEP:      // Single step (F11 by default)
-			currentMode = DMODE_STEP;  // Runs once, then switches back.
 			currentPC = regs.pc;
 			currentPCBank = regs.k;
 			currentPCX16Bank = getCurrentBank(regs.pc, regs.k);
-			debugCPUClocks = clockticks6502;
+			dbg_step();
 			break;
 
 		case DBGKEY_STEPOVER:  // Step over (F10 by default)
-			opcode = debug_read6502(regs.pc, regs.k, currentPCX16Bank); // What opcode is it ?
-			if (opcode == 0x20 || opcode == 0xFC || opcode == 0x22) {   // Is it JSR or JSL ?
-				stepBreakPoint.pc = regs.pc + 3 + (opcode == 0x22);  // Then break 3 / 4 on.
-				stepBreakPoint.bank = regs.k;
-				stepBreakPoint.x16Bank = getCurrentBank(regs.pc, regs.k);
-				currentMode = DMODE_RUN;                // And run.
-				debugCPUClocks = clockticks6502;
-				timing_init();
-			} else {
-				currentMode = DMODE_STEP;               // Otherwise single step.
-				currentPC = regs.pc;
-				currentPCBank = regs.k;
-				currentPCX16Bank = getCurrentBank(regs.pc, regs.k);
-				debugCPUClocks = clockticks6502;
-			}
+			currentPC = regs.pc;
+			currentPCBank = regs.k;
+			currentPCX16Bank = getCurrentBank(regs.pc, regs.k);
+			dbg_step_over();
 			break;
 
 		case DBGKEY_RUN:                                // F5 Runs until Break.
-			currentMode = DMODE_RUN;
-			debugCPUClocks = clockticks6502;
-			timing_init();
+			dbg_continue();
 			break;
 
-		case DBGKEY_SETBRK:                             // F9 Set breakpoint to displayed.
-			if (breakPoint.pc == currentPC && breakPoint.bank == currentPCBank && breakPoint.x16Bank == currentPCX16Bank) {
+		case DBGKEY_SETBRK: {                           // F9 Set breakpoint to displayed.
+			struct breakpoint bp = dbg_get_breakpoint();
+			if (bp.pc == currentPC && bp.bank == currentPCBank && bp.x16Bank == currentPCX16Bank) {
 				// Clear (unset) breakpoint by pressing DBGKEY_SETBRK twice
-				breakPoint.pc = -1;
-				breakPoint.bank = 0;
-				breakPoint.x16Bank = -1;
+				bp.pc = -1;
+				bp.bank = 0;
+				bp.x16Bank = -1;
 			} else {
-				breakPoint.pc = currentPC;
-				breakPoint.bank = currentPCBank;
-				breakPoint.x16Bank = currentPCX16Bank;
+				bp.pc = currentPC;
+				bp.bank = currentPCBank;
+				bp.x16Bank = currentPCX16Bank;
 			}
+			dbg_set_breakpoint(bp);
 			break;
+		}
 
 		case DBGKEY_HOME:                               // F1 sets the display PC to the actual one.
 			currentPC = regs.pc;
@@ -337,7 +315,7 @@ static void DEBUGHandleKeyEvent(SDL_Keycode key, int isShift) {
 			break;
 
 		case DBGKEY_RESET:                              // F2 reset the 6502
-			reset6502(regs.is65c816);
+			dbg_reset_cpu();
 			currentPC = regs.pc;
 			currentPCBank = regs.k;
 			currentPCX16Bank = -1;
@@ -913,20 +891,23 @@ static int DEBUGRenderRegisters(void) {
 
 	}
 
-	if (breakPoint.pc < 0) {
-		DEBUGString(dbgRenderer, DBG_DATX, yc++, "--:----", col_data);
-	} else if (breakPoint.x16Bank < 0) {
-		if (is_gen2) {
-			DEBUGNumber(DBG_DATX, yc, breakPoint.bank, 2, col_data);
-			DEBUGNumber(DBG_DATX+3, yc++, breakPoint.pc, 4, col_data);
+	{
+		struct breakpoint bp = dbg_get_breakpoint();
+		if (bp.pc < 0) {
+			DEBUGString(dbgRenderer, DBG_DATX, yc++, "--:----", col_data);
+		} else if (bp.x16Bank < 0) {
+			if (is_gen2) {
+				DEBUGNumber(DBG_DATX, yc, bp.bank, 2, col_data);
+				DEBUGNumber(DBG_DATX+3, yc++, bp.pc, 4, col_data);
+			} else {
+				DEBUGString(dbgRenderer, DBG_DATX, yc, "--:", col_data);
+				DEBUGNumber(DBG_DATX+3, yc++, (uint16_t)bp.pc, 4, col_data);
+			}
 		} else {
-			DEBUGString(dbgRenderer, DBG_DATX, yc, "--:", col_data);
-			DEBUGNumber(DBG_DATX+3, yc++, (uint16_t)breakPoint.pc, 4, col_data);
+			DEBUGNumber(DBG_DATX, yc, bp.x16Bank, 2, col_data);
+			DEBUGString(dbgRenderer, DBG_DATX+2, yc, ":", col_data);
+			DEBUGNumber(DBG_DATX+3, yc++, bp.pc, 4, col_data);
 		}
-	} else {
-		DEBUGNumber(DBG_DATX, yc, breakPoint.x16Bank, 2, col_data);
-		DEBUGString(dbgRenderer, DBG_DATX+2, yc, ":", col_data);
-		DEBUGNumber(DBG_DATX+3, yc++, breakPoint.pc, 4, col_data);
 	}
 	yc++;
 
@@ -962,7 +943,7 @@ static void DEBUGRenderVERAState(int y) {
 	DEBUGNumber(DBG_VERA_REGX+6, yc++, video_get_fx_accum(), 8, col_data);
 
 	yc+=2;
-	DEBUGNumberDec(DBG_VERA_REGX, yc++, clockticks6502 - debugCPUClocks, 14, col_data);
+	DEBUGNumberDec(DBG_VERA_REGX, yc++, dbg_clocks_since_resume(), 14, col_data);
 }
 
 // *******************************************************************************************
