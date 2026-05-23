@@ -219,9 +219,16 @@ static void cmd_lbp(int argc, char **argv) {
 static void cmd_reg(int argc, char **argv) {
 	(void)argv;
 	if (argc != 0) { err_msg("reg takes no args"); return; }
-	printf("pc=%04x a=%02x x=%02x y=%02x sp=%02x p=%02x k=%02x dbr=%02x\n",
-	       regs.pc, regs.a, regs.xl, regs.yl,
-	       regs.sp & 0xff, regs.status, regs.k, regs.db);
+	dbg_regs_snapshot_t r;
+	dbg_get_regs(&r);
+	// All fields are always present in the output; clients use `mode` to
+	// decide which 65C816-specific fields (b, c, db, dp, e, full x/y) are
+	// meaningful. In 65C02 mode, x and y carry only their low 8 bits.
+	printf("mode=%s pc=%04x a=%02x b=%02x c=%04x x=%04x y=%04x sp=%04x p=%02x k=%02x db=%02x dp=%04x e=%u ram=%02x rom=%02x\n",
+	       r.is_65c816 ? "c816" : "c02",
+	       r.pc, r.a, r.b, r.c, r.x16, r.y16, r.sp,
+	       r.status, r.k, r.db, r.dp, r.e ? 1u : 0u,
+	       r.ram_bank, r.rom_bank);
 	rdy();
 }
 
@@ -231,16 +238,131 @@ static void cmd_srg(int argc, char **argv) {
 		err_msg("usage: srg <name> <hex>");
 		return;
 	}
-	const char *name = argv[0];
-	if      (!strcmp(name, "pc"))                       regs.pc     = (uint16_t)val;
-	else if (!strcmp(name, "a"))                        regs.a      = (uint8_t)val;
-	else if (!strcmp(name, "x"))                        regs.xl     = (uint8_t)val;
-	else if (!strcmp(name, "y"))                        regs.yl     = (uint8_t)val;
-	else if (!strcmp(name, "sp"))                       regs.sp     = (uint16_t)val;
-	else if (!strcmp(name, "p"))                        regs.status = (uint8_t)val;
-	else if (!strcmp(name, "k"))                        regs.k      = (uint8_t)val;
-	else if (!strcmp(name, "dbr") || !strcmp(name, "db")) regs.db   = (uint8_t)val;
-	else                                                { err_msg("unknown register"); return; }
+	if (!dbg_write_register(argv[0], val)) {
+		err_msg("unknown register");
+		return;
+	}
+	rdy();
+}
+
+static void cmd_dis(int argc, char **argv) {
+	uint32_t bank, addr, count;
+	if (argc != 3
+	    || !parse_hex(argv[0], &bank,  0xff)
+	    || !parse_hex(argv[1], &addr,  0xffff)
+	    || !parse_hex(argv[2], &count, 100)) {
+		err_msg("usage: dis <bank> <addr> <count>  (count <= 64)");
+		return;
+	}
+	uint16_t cur = (uint16_t)addr;
+	for (uint32_t i = 0; i < count; i++) {
+		dbg_disasm_line_t line;
+		int len = dbg_disasm_line((uint8_t)bank, cur, &line);
+		printf("%04x:", cur);
+		for (int j = 0; j < line.byte_count; j++) printf(" %02x", line.bytes[j]);
+		for (int j = line.byte_count; j < 4; j++) printf("   ");
+		printf("  %s\n", line.text);
+		cur += (uint16_t)len;
+	}
+	rdy();
+}
+
+static void cmd_vmr(int argc, char **argv) {
+	uint32_t addr, count;
+	if (argc != 2
+	    || !parse_hex(argv[0], &addr,  0x1ffff)
+	    || !parse_hex(argv[1], &count, 0x1000)) {
+		err_msg("usage: vmr <addr> <count>  (count <= 1000)");
+		return;
+	}
+	uint32_t cur = addr;
+	while (count > 0) {
+		int line = count > 16 ? 16 : (int)count;
+		printf("%05x:", cur);
+		for (int i = 0; i < line; i++) {
+			printf(" %02x", dbg_read_vram((cur + i) & 0x1ffff));
+		}
+		printf("\n");
+		cur = (cur + line) & 0x1ffff;
+		count -= line;
+	}
+	rdy();
+}
+
+static void cmd_vmw(int argc, char **argv) {
+	if (argc < 2) { err_msg("usage: vmw <addr> <hex>..."); return; }
+	uint32_t addr;
+	if (!parse_hex(argv[0], &addr, 0x1ffff)) {
+		err_msg("usage: vmw <addr> <hex>...");
+		return;
+	}
+	for (int i = 1; i < argc; i++) {
+		uint32_t v;
+		if (!parse_hex(argv[i], &v, 0xff)) { err_msg("bad byte"); return; }
+		dbg_write_vram((addr + (uint32_t)(i - 1)) & 0x1ffff, (uint8_t)v);
+	}
+	rdy();
+}
+
+static void cmd_stk(int argc, char **argv) {
+	uint32_t count = 16;
+	if (argc > 1)                          { err_msg("usage: stk [<count>]"); return; }
+	if (argc == 1 && !parse_hex(argv[0], &count, 40)) {
+		err_msg("usage: stk [<count>]  (count <= 40)");
+		return;
+	}
+	dbg_stack_entry_t entries[64];
+	dbg_get_stack(entries, (int)count);
+	for (uint32_t i = 0; i < count; i++) {
+		printf("%04x: %02x\n", entries[i].addr, entries[i].value);
+	}
+	rdy();
+}
+
+static void cmd_zpr(int argc, char **argv) {
+	(void)argv;
+	if (argc != 0) { err_msg("zpr takes no args"); return; }
+	uint16_t pairs[16];
+	dbg_get_zp_pairs(pairs);
+	for (int i = 0; i < 16; i++) {
+		printf("R%-2d %04x\n", i, pairs[i]);
+	}
+	rdy();
+}
+
+static void cmd_vrg(int argc, char **argv) {
+	(void)argv;
+	if (argc != 0) { err_msg("vrg takes no args"); return; }
+	dbg_vera_snapshot_t v;
+	dbg_get_vera(&v);
+	printf("addr0=%05x addr1=%05x data0=%02x data1=%02x ctrl=%02x video=%02x hscale=%02x vscale=%02x fxctl=%02x fxmul=%02x cache=%02x%02x%02x%02x accum=%08x\n",
+	       v.addr0, v.addr1, v.data0, v.data1, v.ctrl, v.video,
+	       v.hscale, v.vscale, v.fxctl, v.fxmul,
+	       v.cache[0], v.cache[1], v.cache[2], v.cache[3], v.accum);
+	rdy();
+}
+
+static void cmd_fil(int argc, char **argv) {
+	uint32_t bank, addr, value, count = 1;
+	if (argc < 3 || argc > 4
+	    || !parse_hex(argv[0], &bank,  0xff)
+	    || !parse_hex(argv[1], &addr,  0xffff)
+	    || !parse_hex(argv[2], &value, 0xff)) {
+		err_msg("usage: fil <bank> <addr> <value> [<count>]");
+		return;
+	}
+	if (argc == 4 && !parse_hex(argv[3], &count, 0xffff)) {
+		err_msg("count must be hex");
+		return;
+	}
+	dbg_fill_mem((uint8_t)bank, (uint16_t)addr, (uint8_t)value, (uint16_t)count);
+	rdy();
+}
+
+static void cmd_clk(int argc, char **argv) {
+	(void)argv;
+	if (argc != 0) { err_msg("clk takes no args"); return; }
+	printf("clocks=%u\n", dbg_clocks_since_resume());
 	rdy();
 }
 
@@ -258,7 +380,7 @@ static void cmd_mem(int argc, char **argv) {
 		int line = count > 16 ? 16 : (int)count;
 		printf("%04x:", cur);
 		for (int i = 0; i < line; i++) {
-			printf(" %02x", real_read6502((uint16_t)(cur + i), (uint8_t)bank, true, -1));
+			printf(" %02x", dbg_read_mem((uint8_t)bank, (uint16_t)(cur + i), -1));
 		}
 		printf("\n");
 		cur   += line;
@@ -277,7 +399,7 @@ static void cmd_wmm(int argc, char **argv) {
 	for (int i = 2; i < argc; i++) {
 		uint32_t v;
 		if (!parse_hex(argv[i], &v, 0xff)) { err_msg("bad byte"); return; }
-		write6502((uint16_t)(addr + i - 2), (uint8_t)bank, (uint8_t)v);
+		dbg_write_mem((uint8_t)bank, (uint16_t)(addr + i - 2), (uint8_t)v);
 	}
 	rdy();
 }
@@ -286,16 +408,22 @@ static void cmd_mod(int argc, char **argv) {
 	(void)argv;
 	if (argc != 0) { err_msg("mod takes no args"); return; }
 	const char *m;
-	switch (dbg_get_mode()) {
+	int mode = dbg_get_mode();
+	switch (mode) {
 		case DMODE_RUN:  m = "run";  break;
 		case DMODE_STEP: m = "step"; break;
 		case DMODE_STOP: m = "stop"; break;
 		default:         m = "?";    break;
 	}
-	uint8_t  bank = regs.k;
-	uint16_t pc   = regs.pc;
-	if (dbg_get_mode() == DMODE_STOP) {
+	uint8_t  bank;
+	uint16_t pc;
+	if (mode == DMODE_STOP) {
 		dbg_get_pc(&bank, &pc);
+	} else {
+		dbg_regs_snapshot_t r;
+		dbg_get_regs(&r);
+		bank = r.k;
+		pc   = r.pc;
 	}
 	printf("mode=%s pc=%02x:%04x\n", m, bank, pc);
 	rdy();
@@ -325,18 +453,34 @@ static const struct {
 	const char *name;
 	cmd_fn      fn;
 } commands[] = {
+	// execution control
 	{"brk", cmd_brk},
 	{"cnt", cmd_cnt},
 	{"stp", cmd_stp},
 	{"sov", cmd_sov},
 	{"rst", cmd_rst},
+	// breakpoints
 	{"sbp", cmd_sbp},
 	{"cbp", cmd_cbp},
 	{"lbp", cmd_lbp},
+	// registers
 	{"reg", cmd_reg},
 	{"srg", cmd_srg},
+	// memory (RAM)
 	{"mem", cmd_mem},
 	{"wmm", cmd_wmm},
+	{"fil", cmd_fil},
+	// memory (VRAM)
+	{"vmr", cmd_vmr},
+	{"vmw", cmd_vmw},
+	// disassembly
+	{"dis", cmd_dis},
+	// snapshot panels (parity with SDL)
+	{"stk", cmd_stk},
+	{"zpr", cmd_zpr},
+	{"vrg", cmd_vrg},
+	{"clk", cmd_clk},
+	// session
 	{"mod", cmd_mod},
 	{"ver", cmd_ver},
 	{"qit", cmd_qit},
