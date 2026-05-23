@@ -12,6 +12,7 @@
 #ifndef _DEBUGGER_CORE_H
 #define _DEBUGGER_CORE_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -103,6 +104,112 @@ struct breakpoint dbg_get_breakpoint(void);
 // dbg_continue / dbg_step / dbg_step_over). Used by the SDL render for
 // the "clocks elapsed" panel display.
 uint32_t dbg_clocks_since_resume(void);
+
+// =========================================================================
+// State snapshots
+// =========================================================================
+//
+// Both frontends (SDL panels, stdio REPL) consume these instead of reading
+// `regs` / `real_read6502` / `video_*` directly. One named entry point per
+// data category; the SDL panel renderers and the stdio commands are then
+// thin formatters of the same underlying data.
+
+// Full register snapshot. Fields tagged "always" are valid regardless of
+// CPU mode; fields tagged "65C816" are only meaningful when is_65c816 is
+// true (their values are undefined otherwise).
+typedef struct dbg_regs_snapshot {
+	// always
+	uint16_t pc;
+	uint8_t  a;
+	uint8_t  xl;
+	uint8_t  yl;
+	uint16_t sp;
+	uint8_t  status;
+	uint8_t  k;          // program bank register (PB); 0 in 65C02 mode
+	uint8_t  ram_bank;   // currently-selected $A000-$BFFF RAM bank
+	uint8_t  rom_bank;   // currently-selected $C000-$FFFF ROM bank
+	bool     is_65c816;
+	// 65C816 only:
+	uint8_t  b;          // 65C816 B accumulator
+	uint16_t c;          // 65C816 16-bit C (full accumulator)
+	uint16_t x16;        // full 16-bit X
+	uint16_t y16;        // full 16-bit Y
+	uint8_t  db;         // data bank register (DBR)
+	uint16_t dp;         // direct page register
+	uint8_t  e;          // 1 = 6502 emulation mode, 0 = native
+} dbg_regs_snapshot_t;
+
+void dbg_get_regs(dbg_regs_snapshot_t *out);
+
+// Direct-page register pairs R0..R15. Each entry is a 16-bit word read from
+// the direct-page-adjusted addresses ($02+idx*2 lo, $02+idx*2+1 hi).
+void dbg_get_zp_pairs(uint16_t out[16]);
+
+// Stack snapshot: N bytes from the top of the stack starting at SP+1,
+// matching the SDL stack panel. Wraps at the stack-page boundary.
+typedef struct dbg_stack_entry {
+	uint16_t addr;
+	uint8_t  value;
+} dbg_stack_entry_t;
+
+void dbg_get_stack(dbg_stack_entry_t *out, int count);
+
+// VERA state snapshot — the same fields the SDL VERA panel renders.
+typedef struct dbg_vera_snapshot {
+	uint32_t addr0;
+	uint32_t addr1;
+	uint8_t  data0;
+	uint8_t  data1;
+	uint8_t  ctrl;
+	uint8_t  video;
+	uint8_t  hscale;
+	uint8_t  vscale;
+	uint8_t  fxctl;
+	uint8_t  fxmul;
+	uint8_t  cache[4];
+	uint32_t accum;
+} dbg_vera_snapshot_t;
+
+void dbg_get_vera(dbg_vera_snapshot_t *out);
+
+// CPU-space memory access. Goes through the same debug-read path the SDL
+// panel does, so reads don't perturb VERA / I/O side effects.
+//
+// x16Bank is the X16 RAM/ROM bank to view in the $A000-$FFFF window.
+// Pass -1 (i.e. USE_CURRENT_X16_BANK from memory.h) to read whatever bank
+// the CPU has currently selected; pass a specific bank to view that one
+// without changing CPU state (matches the SDL "m <bank>:<addr>" feature).
+uint8_t dbg_read_mem(uint8_t bank, uint16_t addr, int16_t x16Bank);
+
+// Writes always go through write6502, which targets the currently-selected
+// bank. SDL's bank-aware fill (its `f` command does manual buffer writes)
+// is an exception and stays in the SDL frontend.
+void    dbg_write_mem(uint8_t bank, uint16_t addr, uint8_t value);
+void    dbg_fill_mem(uint8_t bank, uint16_t addr, uint8_t value, uint16_t len);
+
+// VRAM byte access (VERA address space, 17-bit).
+uint8_t dbg_read_vram(uint32_t addr);
+void    dbg_write_vram(uint32_t addr, uint8_t value);
+
+// One disassembled instruction. `byte_count` is the instruction length
+// (1..4 for 65C816). `text` is the mnemonic + operands; no leading
+// address column (caller formats that). `bytes` is the raw machine code.
+typedef struct dbg_disasm_line {
+	uint16_t addr;
+	uint8_t  bank;
+	uint8_t  bytes[4];
+	int      byte_count;
+	char     text[24];
+} dbg_disasm_line_t;
+
+// Returns the instruction's byte_count (call again with addr += result
+// to disassemble the next instruction).
+int dbg_disasm_line(uint8_t bank, uint16_t addr, dbg_disasm_line_t *out);
+
+// Set a CPU register by name. Names: "pc","a","b","c","d","dp","k",
+// "dbr"/"db","x","y","sp","p"/"status","e". Returns false on unknown
+// name or out-of-range value.
+bool dbg_write_register(const char *name, uint32_t value);
 
 // =========================================================================
 // Frontend abstraction

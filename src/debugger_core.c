@@ -9,12 +9,17 @@
 #include "debugger_core.h"
 #include "memory.h"
 #include "timing.h"
+#include "video.h"
+#include "disasm.h"
 #include "cpu/fake6502.h"
 #include "cpu/registers.h"
 
-// `regs` is defined in glue.h, but glue.h transitively pulls in SDL --
-// which would defeat the point of a SDL-free core. Extern it directly.
+#include <string.h>
+
+// `regs` and `RAM` live in glue.h, but glue.h transitively pulls in SDL --
+// which would defeat the point of a SDL-free core. Extern them directly.
 extern struct regs regs;
+extern uint8_t    *RAM;
 
 // ----- File-static state (moved here from debugger.c) -----
 
@@ -190,4 +195,135 @@ int dbg_frontend_tick(void) {
 		return active_frontend->tick();
 	}
 	return 0;
+}
+
+// =========================================================================
+// State snapshots / data access
+// =========================================================================
+
+void dbg_get_regs(dbg_regs_snapshot_t *out) {
+	out->pc        = regs.pc;
+	out->a         = regs.a;
+	out->xl        = regs.xl;
+	out->yl        = regs.yl;
+	out->sp        = regs.sp;
+	out->status    = regs.status;
+	out->k         = regs.k;
+	out->ram_bank  = memory_get_ram_bank();
+	out->rom_bank  = memory_get_rom_bank();
+	out->is_65c816 = regs.is65c816;
+	if (regs.is65c816) {
+		out->b   = regs.b;
+		out->c   = regs.c;
+		out->x16 = regs.x;
+		out->y16 = regs.y;
+		out->db  = regs.db;
+		out->dp  = regs.dp;
+		out->e   = regs.e;
+	} else {
+		out->b   = 0;
+		out->c   = 0;
+		out->x16 = regs.xl;
+		out->y16 = regs.yl;
+		out->db  = 0;
+		out->dp  = 0;
+		out->e   = 1;  // 65C02 is "always" in emulation mode
+	}
+}
+
+void dbg_get_zp_pairs(uint16_t out[16]) {
+	for (int i = 0; i < 16; i++) {
+		uint16_t lo_addr = direct_page_add(2 + i * 2);
+		uint16_t hi_addr = direct_page_add(2 + i * 2 + 1);
+		uint8_t  lo      = real_read6502(lo_addr, 0, true, USE_CURRENT_X16_BANK);
+		uint8_t  hi      = real_read6502(hi_addr, 0, true, USE_CURRENT_X16_BANK);
+		out[i]           = (uint16_t)((hi << 8) | lo);
+	}
+}
+
+void dbg_get_stack(dbg_stack_entry_t *out, int count) {
+	uint16_t sp = regs.sp;
+	increment_wrap_at_page_boundary(&sp);
+	for (int i = 0; i < count; i++) {
+		out[i].addr  = sp;
+		out[i].value = real_read6502(sp, 0, true, USE_CURRENT_X16_BANK);
+		increment_wrap_at_page_boundary(&sp);
+	}
+}
+
+void dbg_get_vera(dbg_vera_snapshot_t *out) {
+	out->addr0    = video_get_address(0);
+	out->addr1    = video_get_address(1);
+	out->data0    = video_read(3, true);
+	out->data1    = video_read(4, true);
+	out->ctrl     = video_read(5, true);
+	out->video    = video_get_dc_value(0);
+	out->hscale   = video_get_dc_value(1);
+	out->vscale   = video_get_dc_value(2);
+	out->fxctl    = video_get_dc_value(8);
+	out->fxmul    = video_get_dc_value(11);
+	out->cache[0] = video_get_dc_value(24);
+	out->cache[1] = video_get_dc_value(25);
+	out->cache[2] = video_get_dc_value(26);
+	out->cache[3] = video_get_dc_value(27);
+	out->accum    = video_get_fx_accum();
+}
+
+uint8_t dbg_read_mem(uint8_t bank, uint16_t addr, int16_t x16Bank) {
+	return real_read6502(addr, bank, true, x16Bank);
+}
+
+void dbg_write_mem(uint8_t bank, uint16_t addr, uint8_t value) {
+	write6502(addr, bank, value);
+}
+
+void dbg_fill_mem(uint8_t bank, uint16_t addr, uint8_t value, uint16_t len) {
+	for (uint16_t i = 0; i < len; i++) {
+		write6502((uint16_t)(addr + i), bank, value);
+	}
+}
+
+uint8_t dbg_read_vram(uint32_t addr) {
+	return video_space_read(addr);
+}
+
+void dbg_write_vram(uint32_t addr, uint8_t value) {
+	video_space_write(addr, value);
+}
+
+int dbg_disasm_line(uint8_t bank, uint16_t addr, dbg_disasm_line_t *out) {
+	out->addr = addr;
+	out->bank = bank;
+	int32_t eff_addr;
+	int     len = disasm(addr, bank, RAM, out->text, sizeof(out->text),
+	                     -1, regs.status, &eff_addr);
+	out->byte_count = len > 4 ? 4 : len;
+	for (int i = 0; i < out->byte_count; i++) {
+		out->bytes[i] = real_read6502((uint16_t)(addr + i), bank, true, -1);
+	}
+	return len;
+}
+
+bool dbg_write_register(const char *name, uint32_t value) {
+	if (!name) return false;
+	if      (!strcmp(name, "pc"))                              { regs.pc     = (uint16_t)value; }
+	else if (!strcmp(name, "a"))                               { regs.a      = (uint8_t)value;  }
+	else if (!strcmp(name, "b"))                               { regs.b      = (uint8_t)value;  }
+	else if (!strcmp(name, "c"))                               { regs.c      = (uint16_t)value; }
+	else if (!strcmp(name, "x"))                               {
+		if (regs.is65c816) regs.x  = (uint16_t)value;
+		else               regs.xl = (uint8_t)value;
+	}
+	else if (!strcmp(name, "y"))                               {
+		if (regs.is65c816) regs.y  = (uint16_t)value;
+		else               regs.yl = (uint8_t)value;
+	}
+	else if (!strcmp(name, "sp"))                              { regs.sp     = (uint16_t)value; }
+	else if (!strcmp(name, "p") || !strcmp(name, "status"))    { regs.status = (uint8_t)value;  }
+	else if (!strcmp(name, "k"))                               { regs.k      = (uint8_t)value;  }
+	else if (!strcmp(name, "db") || !strcmp(name, "dbr"))      { regs.db     = (uint8_t)value;  }
+	else if (!strcmp(name, "d")  || !strcmp(name, "dp"))       { regs.dp     = (uint16_t)value; }
+	else if (!strcmp(name, "e"))                               { regs.e      = value ? 1 : 0;   }
+	else return false;
+	return true;
 }

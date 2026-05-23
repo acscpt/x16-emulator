@@ -673,6 +673,8 @@ static int DEBUGRenderZeroPageRegisters(int y) {
 	unsigned char reg = 0;
 	int y_start = y;
 	char lbl[12];
+	uint16_t zp_pairs[16];
+	dbg_get_zp_pairs(zp_pairs);
 	while (reg < DBGMAX_ZERO_PAGE_REGISTERS) {
 		if (((y-y_start) % 5) != 0) {           // Break registers into groups of 5, easier to locate
 			if (reg <= LAST_R)
@@ -682,8 +684,7 @@ static int DEBUGRenderZeroPageRegisters(int y) {
 
 			DEBUGString(dbgRenderer, DBG_ZP_REG, y, lbl, col_label);
 
-			int reg_addr = 2 + reg * 2;
-			int n = debug_read6502(direct_page_add(reg_addr+1), 0, USE_CURRENT_X16_BANK)*256+debug_read6502(direct_page_add(reg_addr), 0, USE_CURRENT_X16_BANK);
+			int n = zp_pairs[reg];
 
 			DEBUGNumber(DBG_ZP_REG+5, y, n, 4, col_data);
 
@@ -718,7 +719,7 @@ static void DEBUGRenderData(int y,uint32_t data) {
 
 		for (int i = 0;i < 8;i++) {
 			bool isDP = (data >> 16) == 0 && ((data+i - regs.dp) & 0xffff) < 256;
-			int byte = debug_read6502((data+i) & 0xFFFF, data >> 16, currentX16Bank);
+			int byte = dbg_read_mem((uint8_t)(data >> 16), (uint16_t)((data+i) & 0xFFFF), currentX16Bank);
 			DEBUGNumber(DBG_MEMX+8+i*3,y,byte,2, isDP ? col_directpage : col_data);
 			DEBUGWrite(dbgRenderer, DBG_MEMX+33+i,y,byte, isDP ? col_directpage : col_data);
 		}
@@ -733,7 +734,7 @@ static void DEBUGRenderVRAM(int y, int data) {
 
 		for (int i = 0; i < 16; i++) {
 			int addr = (data + i) & 0x1FFFF;
-			int byte = video_space_read(addr);
+			int byte = dbg_read_vram(addr);
 
 			if (video_is_tilemap_address(addr)) {
 				DEBUGNumber(DBG_MEMX + 6 + i * 3, y, byte, 2, col_vram_tilemap);
@@ -777,7 +778,7 @@ static void DEBUGRenderCode(int lines, int initialPC) {
 		// still been true without the added logic, anyway.
 
 		if (regs.is65c816) {
-			opcode = debug_read6502(initialPC, currentPCBank, currentPCX16Bank);
+			opcode = dbg_read_mem(currentPCBank, initialPC, currentPCX16Bank);
 			switch (opcode) {
 				case 0x81: // CLC
 					implied_status &= ~FLAG_CARRY;
@@ -786,11 +787,11 @@ static void DEBUGRenderCode(int lines, int initialPC) {
 					implied_status |= FLAG_CARRY;
 					;;
 				case 0xC2: // REP
-					operand = debug_read6502((initialPC+1) & 0xffff, currentPCBank, currentPCX16Bank);
+					operand = dbg_read_mem(currentPCBank, (uint16_t)((initialPC+1) & 0xffff), currentPCX16Bank);
 					implied_status = ~operand & implied_status;
 					;;
 				case 0xE2: // SEP
-					operand = debug_read6502((initialPC+1) & 0xffff, currentPCBank, currentPCX16Bank);
+					operand = dbg_read_mem(currentPCBank, (uint16_t)((initialPC+1) & 0xffff), currentPCX16Bank);
 					implied_status = operand | implied_status;
 					;;
 				case 0xFB: // XCE
@@ -842,60 +843,62 @@ static void DEBUGNumberHighByteCondition(int x, int y, int n, bool condition, SD
 
 static int DEBUGRenderRegisters(void) {
 	int n = 0,yc = 0;
-	if (regs.is65c816) {
+	dbg_regs_snapshot_t r;
+	dbg_get_regs(&r);
+	if (r.is_65c816) {
 		while (labels_c816[n] != NULL) {								// Labels
 			DEBUGString(dbgRenderer, DBG_LBLX,n,labels_c816[n], col_label);n++;
 		}
 		yc++;
-		DEBUGNumber(DBG_LBLX, yc, (regs.status >> 7) & 1, 1, col_data);
-		DEBUGNumber(DBG_LBLX+1, yc, (regs.status >> 6) & 1, 1, col_data);
-		DEBUGNumber(DBG_LBLX+2, yc, (regs.status >> 5) & 1, 1, regs.e ? col_vram_other : col_data);
-		DEBUGNumber(DBG_LBLX+3, yc, (regs.status >> 4) & 1, 1, regs.e ? col_vram_other : col_data);
-		DEBUGNumber(DBG_LBLX+4, yc, (regs.status >> 3) & 1, 1, col_data);
-		DEBUGNumber(DBG_LBLX+5, yc, (regs.status >> 2) & 1, 1, col_data);
-		DEBUGNumber(DBG_LBLX+6, yc, (regs.status >> 1) & 1, 1, col_data);
-		DEBUGNumber(DBG_LBLX+7, yc, (regs.status >> 0) & 1, 1, col_data);
-		DEBUGNumber(DBG_LBLX+8, yc, regs.e, 1, col_data);
+		DEBUGNumber(DBG_LBLX, yc, (r.status >> 7) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX+1, yc, (r.status >> 6) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX+2, yc, (r.status >> 5) & 1, 1, r.e ? col_vram_other : col_data);
+		DEBUGNumber(DBG_LBLX+3, yc, (r.status >> 4) & 1, 1, r.e ? col_vram_other : col_data);
+		DEBUGNumber(DBG_LBLX+4, yc, (r.status >> 3) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX+5, yc, (r.status >> 2) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX+6, yc, (r.status >> 1) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX+7, yc, (r.status >> 0) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX+8, yc, r.e, 1, col_data);
 		yc+= 2;
 
-		DEBUGNumber(DBG_DATX, yc++, regs.a, 2, col_data);
-		DEBUGNumber(DBG_DATX, yc++, regs.b, 2, col_data);
-		DEBUGNumber(DBG_DATX, yc++, regs.c, 4, col_data);
-		DEBUGNumberHighByteCondition(DBG_DATX, yc++, regs.x, (regs.status >> 4) & 1, col_vram_other, col_data);
-		DEBUGNumberHighByteCondition(DBG_DATX, yc++, regs.y, (regs.status >> 4) & 1, col_vram_other, col_data);
-		DEBUGNumber(DBG_DATX, yc++, regs.k, 2, col_data);
-		DEBUGNumber(DBG_DATX, yc++, regs.db, 2, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.a, 2, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.b, 2, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.c, 4, col_data);
+		DEBUGNumberHighByteCondition(DBG_DATX, yc++, r.x16, (r.status >> 4) & 1, col_vram_other, col_data);
+		DEBUGNumberHighByteCondition(DBG_DATX, yc++, r.y16, (r.status >> 4) & 1, col_vram_other, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.k, 2, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.db, 2, col_data);
 		yc++;
 
-		DEBUGNumber(DBG_DATX, yc++, regs.pc, 4, col_data);
-		DEBUGNumber(DBG_DATX, yc++, regs.dp, 4, col_data);
-		DEBUGNumberHighByteCondition(DBG_DATX, yc++, regs.sp, regs.e, col_vram_other, col_data);
-		DEBUGNumber(DBG_DATX, yc++, memory_get_ram_bank(), 2, col_data);
-		DEBUGNumber(DBG_DATX, yc++, memory_get_rom_bank(), 2, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.pc, 4, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.dp, 4, col_data);
+		DEBUGNumberHighByteCondition(DBG_DATX, yc++, r.sp, r.e, col_vram_other, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.ram_bank, 2, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.rom_bank, 2, col_data);
 		yc++;
 	} else {
 		while (labels_c02[n] != NULL) {									// Labels
 			DEBUGString(dbgRenderer, DBG_LBLX,n,labels_c02[n], col_label);n++;
 		}
 		yc++;
-		DEBUGNumber(DBG_LBLX, yc, (regs.status >> 7) & 1, 1, col_data);
-		DEBUGNumber(DBG_LBLX+1, yc, (regs.status >> 6) & 1, 1, col_data);
-		DEBUGNumber(DBG_LBLX+3, yc, (regs.status >> 4) & 1, 1, col_data);
-		DEBUGNumber(DBG_LBLX+4, yc, (regs.status >> 3) & 1, 1, col_data);
-		DEBUGNumber(DBG_LBLX+5, yc, (regs.status >> 2) & 1, 1, col_data);
-		DEBUGNumber(DBG_LBLX+6, yc, (regs.status >> 1) & 1, 1, col_data);
-		DEBUGNumber(DBG_LBLX+7, yc, (regs.status >> 0) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX, yc, (r.status >> 7) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX+1, yc, (r.status >> 6) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX+3, yc, (r.status >> 4) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX+4, yc, (r.status >> 3) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX+5, yc, (r.status >> 2) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX+6, yc, (r.status >> 1) & 1, 1, col_data);
+		DEBUGNumber(DBG_LBLX+7, yc, (r.status >> 0) & 1, 1, col_data);
 		yc+= 2;
 
-		DEBUGNumber(DBG_DATX, yc++, regs.a, 2, col_data);
-		DEBUGNumber(DBG_DATX, yc++, regs.xl, 2, col_data);
-		DEBUGNumber(DBG_DATX, yc++, regs.yl, 2, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.a, 2, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.xl, 2, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.yl, 2, col_data);
 		yc++;
 
-		DEBUGNumber(DBG_DATX, yc++, regs.pc, 4, col_data);
-		DEBUGNumber(DBG_DATX, yc++, regs.sp|0x100, 4, col_data);
-		DEBUGNumber(DBG_DATX, yc++, memory_get_ram_bank(), 2, col_data);
-		DEBUGNumber(DBG_DATX, yc++, memory_get_rom_bank(), 2, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.pc, 4, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.sp|0x100, 4, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.ram_bank, 2, col_data);
+		DEBUGNumber(DBG_DATX, yc++, r.rom_bank, 2, col_data);
 		yc++;
 
 	}
@@ -935,21 +938,24 @@ static void DEBUGRenderVERAState(int y) {
 
 	yc=y;
 
-	DEBUGNumber(DBG_VERA_REGX+6, yc++, video_get_address(0), 5, col_data);
-	DEBUGNumber(DBG_VERA_REGX+6, yc++, video_get_address(1), 5, col_data);
-	DEBUGNumber(DBG_VERA_REGX+6, yc++, video_read(3, true), 2, col_data);
-	DEBUGNumber(DBG_VERA_REGX+6, yc++, video_read(4, true), 2, col_data);
-	DEBUGNumber(DBG_VERA_REGX+6, yc++, video_read(5, true), 2, col_data);
-	DEBUGNumber(DBG_VERA_REGX+6, yc++, video_get_dc_value(0), 2, col_data);
-	DEBUGNumber(DBG_VERA_REGX+6, yc++, video_get_dc_value(1), 2, col_data);
-	DEBUGNumber(DBG_VERA_REGX+6, yc++, video_get_dc_value(2), 2, col_data);
-	DEBUGNumber(DBG_VERA_REGX+6, yc++, video_get_dc_value(8), 2, col_data);
-	DEBUGNumber(DBG_VERA_REGX+6, yc++, video_get_dc_value(11), 2, col_data);
-	DEBUGNumber(DBG_VERA_REGX+6, yc, video_get_dc_value(24), 2, col_data);
-	DEBUGNumber(DBG_VERA_REGX+8, yc, video_get_dc_value(25), 2, col_data);
-	DEBUGNumber(DBG_VERA_REGX+10, yc, video_get_dc_value(26), 2, col_data);
-	DEBUGNumber(DBG_VERA_REGX+12, yc++, video_get_dc_value(27), 2, col_data);
-	DEBUGNumber(DBG_VERA_REGX+6, yc++, video_get_fx_accum(), 8, col_data);
+	dbg_vera_snapshot_t v;
+	dbg_get_vera(&v);
+
+	DEBUGNumber(DBG_VERA_REGX+6, yc++, v.addr0,  5, col_data);
+	DEBUGNumber(DBG_VERA_REGX+6, yc++, v.addr1,  5, col_data);
+	DEBUGNumber(DBG_VERA_REGX+6, yc++, v.data0,  2, col_data);
+	DEBUGNumber(DBG_VERA_REGX+6, yc++, v.data1,  2, col_data);
+	DEBUGNumber(DBG_VERA_REGX+6, yc++, v.ctrl,   2, col_data);
+	DEBUGNumber(DBG_VERA_REGX+6, yc++, v.video,  2, col_data);
+	DEBUGNumber(DBG_VERA_REGX+6, yc++, v.hscale, 2, col_data);
+	DEBUGNumber(DBG_VERA_REGX+6, yc++, v.vscale, 2, col_data);
+	DEBUGNumber(DBG_VERA_REGX+6, yc++, v.fxctl,  2, col_data);
+	DEBUGNumber(DBG_VERA_REGX+6, yc++, v.fxmul,  2, col_data);
+	DEBUGNumber(DBG_VERA_REGX+6,  yc, v.cache[0], 2, col_data);
+	DEBUGNumber(DBG_VERA_REGX+8,  yc, v.cache[1], 2, col_data);
+	DEBUGNumber(DBG_VERA_REGX+10, yc, v.cache[2], 2, col_data);
+	DEBUGNumber(DBG_VERA_REGX+12, yc++, v.cache[3], 2, col_data);
+	DEBUGNumber(DBG_VERA_REGX+6, yc++, v.accum,  8, col_data);
 
 	yc+=2;
 	DEBUGNumberDec(DBG_VERA_REGX, yc++, dbg_clocks_since_resume(), 14, col_data);
@@ -962,17 +968,14 @@ static void DEBUGRenderVERAState(int y) {
 // *******************************************************************************************
 
 static void DEBUGRenderStack(int bytesCount) {
-	uint16_t sp = regs.sp;
-	increment_wrap_at_page_boundary(&sp);
+	dbg_stack_entry_t entries[64];
+	int n = bytesCount > 64 ? 64 : bytesCount;
+	dbg_get_stack(entries, n);
 
-	int y= 0;
-	while (y < bytesCount) {
-		DEBUGNumber(DBG_STCK,y, sp,4, col_label);
-		int byte = debug_read6502(sp, 0, USE_CURRENT_X16_BANK);
-		DEBUGNumber(DBG_STCK+5,y,byte,2, col_data);
-		DEBUGWrite(dbgRenderer, DBG_STCK+9,y,byte, col_data);
-		y++;
-		increment_wrap_at_page_boundary(&sp);
+	for (int y = 0; y < n; y++) {
+		DEBUGNumber(DBG_STCK,   y, entries[y].addr,  4, col_label);
+		DEBUGNumber(DBG_STCK+5, y, entries[y].value, 2, col_data);
+		DEBUGWrite (dbgRenderer, DBG_STCK+9, y, entries[y].value, col_data);
 	}
 }
 
