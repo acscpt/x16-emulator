@@ -12,6 +12,7 @@
 #include "glue.h"
 
 bool video_init(int window_scale, float screen_x_scale, char *quality, bool fullscreen, float opacity);
+bool video_is_alive(void);
 void video_reset(void);
 bool video_step(float mhz, float steps, bool midline);
 bool video_update(void);

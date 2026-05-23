@@ -129,6 +129,7 @@ bool test_init_complete=false;
 bool headless = false;
 bool fullscreen = false;
 bool testbench = false;
+bool debugger_stdio_mode = false;
 bool enable_midline = false;
 bool ym2151_irq_support = false;
 char *cartridge_path = NULL;

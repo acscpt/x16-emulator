@@ -223,7 +223,9 @@ int  DEBUGGetCurrentStatus(void) {
 	int mode = dbg_get_mode();
 	showDebugOnRender = (mode != DMODE_RUN);                                // Do we draw it - only in RUN mode.
 	if (mode == DMODE_STOP) {                                               // We're in charge.
-		video_update();
+		if (video_is_alive()) {
+			video_update();
+		}
 		SDL_Delay(10);
 		return 1;
 	}

@@ -79,6 +79,7 @@ extern uint8_t keymap;
 extern bool warp_mode;
 extern bool grab_mouse;
 extern bool testbench;
+extern bool debugger_stdio_mode;        // -debugstdio CLI flag: drive debugger over stdin/stdout
 extern bool has_via2;
 extern uint32_t host_sample_rate;
 extern bool enable_midline;

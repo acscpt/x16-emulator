@@ -314,6 +314,12 @@ video_reset()
 	pcm_reset();
 }
 
+static bool video_initialized = false;
+
+bool video_is_alive(void) {
+	return video_initialized;
+}
+
 bool
 video_init(int window_scale, float screen_x_scale, char *quality, bool fullscreen, float opacity)
 {
@@ -383,6 +389,7 @@ video_init(int window_scale, float screen_x_scale, char *quality, bool fullscree
 	if (grab_mouse && !mouse_grabbed)
 		mousegrab_toggle();
 
+	video_initialized = true;
 	return true;
 }
 
@@ -1534,6 +1541,7 @@ video_update()
 void
 video_end()
 {
+	video_initialized = false;
 	if (debugger_enabled) {
 		DEBUGFreeUI();
 	}
