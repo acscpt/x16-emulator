@@ -1625,7 +1625,7 @@ emulator_loop(void *param)
 		}
 
 		if (debugger_enabled) {
-			int dbgCmd = DEBUGGetCurrentStatus();
+			int dbgCmd = dbg_frontend_tick();
 			if (dbgCmd > 0) continue;
 			if (dbgCmd < 0) break;
 		}

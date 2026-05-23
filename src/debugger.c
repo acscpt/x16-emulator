@@ -166,6 +166,7 @@ static void sdl_on_resume(void) {
 }
 
 static const dbg_frontend_t sdl_frontend = {
+	.tick      = DEBUGGetCurrentStatus,
 	.on_break  = sdl_on_break,
 	.on_resume = sdl_on_resume,
 };

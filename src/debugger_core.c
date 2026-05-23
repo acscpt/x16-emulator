@@ -184,3 +184,10 @@ uint32_t dbg_clocks_since_resume(void) {
 void dbg_register_frontend(const dbg_frontend_t *fe) {
 	active_frontend = fe;
 }
+
+int dbg_frontend_tick(void) {
+	if (active_frontend && active_frontend->tick) {
+		return active_frontend->tick();
+	}
+	return 0;
+}

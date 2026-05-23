@@ -116,10 +116,21 @@ uint32_t dbg_clocks_since_resume(void);
 // previous registration.
 
 typedef struct dbg_frontend {
+	// Called once per main-loop iteration when debugger_enabled is true.
+	// Return code matches the pre-refactor DEBUGGetCurrentStatus contract:
+	//    0: let the CPU step normally this iteration
+	//   +1: stay in debug mode (skip the CPU step and loop)
+	//   -1: exit the emulator
+	int  (*tick)(void);
+	// State-transition callbacks.
 	void (*on_break)(dbg_break_reason_t reason, uint8_t bank, uint16_t addr);
 	void (*on_resume)(void);
 } dbg_frontend_t;
 
 void dbg_register_frontend(const dbg_frontend_t *fe);
+
+// Called from main.c's main loop. Delegates to the registered frontend's
+// tick() method, or returns 0 if no frontend is registered.
+int  dbg_frontend_tick(void);
 
 #endif // _DEBUGGER_CORE_H
