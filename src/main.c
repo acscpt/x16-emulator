@@ -32,6 +32,7 @@
 #include "ieee.h"
 #include "glue.h"
 #include "debugger.h"
+#include "debugger_stdio.h"
 #include "utf8.h"
 #include "iso_8859_15.h"
 #include "joystick.h"
@@ -1314,6 +1315,10 @@ main(int argc, char **argv)
 	rtc_init(set_system_time);
 
 	machine_reset();
+
+	if (debugger_stdio_mode) {
+		debugger_stdio_init();
+	}
 
 	timing_init();
 

@@ -189,6 +189,7 @@ set(X16_SOURCES
     src/main.c
     src/debugger_core.c
     src/debugger.c
+    src/debugger_stdio.c
     src/javascript_interface.c
     src/joystick.c
     src/rendertext.c
