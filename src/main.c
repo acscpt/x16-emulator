@@ -484,6 +484,8 @@ usage()
 	printf("\tSet the opacity value (0.0 for transparent, 1.0 for opaque) of the window. (default: %.1f)\n", window_opacity);
 	printf("-debug [<address>]\n");
 	printf("\tEnable debugger. Optionally, set a breakpoint\n");
+	printf("-debugstdio [<address>]\n");
+	printf("\tEnable debugger over stdin/stdout (headless, no window). Optionally, set a breakpoint. Mutually exclusive with -debug.\n");
 	printf("-randram\n");
 	printf("\t(deprecated, no effect)\n");
 	printf("-zeroram\n");
@@ -877,7 +879,37 @@ main(int argc, char **argv)
 		} else if (!strcmp(argv[0], "-debug")) {
 			argc--;
 			argv++;
+			if (debugger_stdio_mode) {
+				fprintf(stderr, "-debug and -debugstdio are mutually exclusive\n");
+				exit(1);
+			}
 			debugger_enabled = true;
+			if (argc && argv[0][0] != '-') {
+				uint32_t bpVal = (uint32_t)strtol(argv[0], NULL, 16);
+				struct breakpoint bp;
+				if (bpVal < 0xA000) {
+					bp.pc = bpVal;
+					bp.bank = 0;
+					bp.x16Bank = -1;
+				} else {
+					bp.pc = bpVal & 0xffff;
+					bp.bank = 0;
+					bp.x16Bank = bpVal >> 16;
+				}
+				DEBUGSetBreakPoint(bp);
+				argc--;
+				argv++;
+			}
+		} else if (!strcmp(argv[0], "-debugstdio")) {
+			argc--;
+			argv++;
+			if (debugger_enabled && !debugger_stdio_mode) {
+				fprintf(stderr, "-debug and -debugstdio are mutually exclusive\n");
+				exit(1);
+			}
+			debugger_enabled    = true;
+			debugger_stdio_mode = true;
+			headless            = true;       // skip SDL init; existing !headless guard handles it
 			if (argc && argv[0][0] != '-') {
 				uint32_t bpVal = (uint32_t)strtol(argv[0], NULL, 16);
 				struct breakpoint bp;
