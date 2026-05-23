@@ -1284,6 +1284,25 @@ main(int argc, char **argv)
 #ifdef __EMSCRIPTEN__
 	emscripten_set_main_loop(emscripten_main_loop, 0, 0);
 #endif
+
+	// In -debugstdio mode, stdout is the REPL channel. -echo / -trace / -log
+	// would flood it with character spam, instruction traces, and per-event
+	// log lines that clash with the protocol. Disable them and warn once if
+	// the user combined the flags.
+	if (debugger_stdio_mode) {
+		bool muted = false;
+		if (echo_mode != ECHO_MODE_NONE) { echo_mode = ECHO_MODE_NONE; muted = true; }
+		if (log_keyboard)                 { log_keyboard = false;       muted = true; }
+		if (log_speed)                    { log_speed    = false;       muted = true; }
+		if (log_video)                    { log_video    = false;       muted = true; }
+#ifdef TRACE
+		if (trace_mode)                   { trace_mode   = false;       muted = true; }
+#endif
+		if (muted) {
+			fprintf(stderr, "-debugstdio: -echo / -log / -trace disabled (would collide with the REPL protocol on stdout)\n");
+		}
+	}
+
 	if (!headless) {
 		// Shows up in the power management area of Linux desktops of applications inhibiting the screensaver
 		// As well as the audio mixer
