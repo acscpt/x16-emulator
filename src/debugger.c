@@ -153,17 +153,22 @@ static inline int getCurrentBank(int pc, uint8_t bank) {
 //
 // *******************************************************************************************
 
-void dbg_frontend_on_break(dbg_break_reason_t reason, uint8_t bank, uint16_t pc) {
-	(void)reason; // Phase 2 SDL frontend does not differentiate by reason.
+static void sdl_on_break(dbg_break_reason_t reason, uint8_t bank, uint16_t pc) {
+	(void)reason;
 	currentPC        = pc;
 	currentPCBank    = bank;
 	currentPCX16Bank = getCurrentBank(pc, bank);
 }
 
-void dbg_frontend_on_resume(void) {
-	// SDL frontend has no extra work here -- DEBUGGetCurrentStatus mirrors
-	// the core's mode into showDebugOnRender on every tick.
+static void sdl_on_resume(void) {
+	// DEBUGGetCurrentStatus mirrors the core's mode into showDebugOnRender
+	// on every tick, so no extra work here.
 }
+
+static const dbg_frontend_t sdl_frontend = {
+	.on_break  = sdl_on_break,
+	.on_resume = sdl_on_resume,
+};
 
 // *******************************************************************************************
 //
@@ -234,6 +239,7 @@ int  DEBUGGetCurrentStatus(void) {
 void DEBUGInitUI(SDL_Renderer *pRenderer) {
 		DEBUGInitChars(pRenderer);
 		dbgRenderer = pRenderer;				// Save renderer.
+		dbg_register_frontend(&sdl_frontend);
 }
 
 // *******************************************************************************************

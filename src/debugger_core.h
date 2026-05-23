@@ -105,14 +105,21 @@ struct breakpoint dbg_get_breakpoint(void);
 uint32_t dbg_clocks_since_resume(void);
 
 // =========================================================================
-// Frontend callbacks (frontend defines, core calls)
+// Frontend abstraction
 // =========================================================================
 //
-// In Phase 2 the SDL frontend (debugger.c) provides these. Phase 3 promotes
-// them into a dbg_frontend_t vtable so a second frontend (debugger_stdio.c)
-// can register alongside.
+// A frontend (the SDL TUI in debugger.c, the stdio frontend in
+// debugger_stdio.c) packs its callbacks into a dbg_frontend_t and
+// registers it with the core. The core invokes them when the state
+// machine transitions into or out of the stopped state. Exactly one
+// frontend is active at a time; registering a new one replaces the
+// previous registration.
 
-extern void dbg_frontend_on_break(dbg_break_reason_t reason, uint8_t bank, uint16_t addr);
-extern void dbg_frontend_on_resume(void);
+typedef struct dbg_frontend {
+	void (*on_break)(dbg_break_reason_t reason, uint8_t bank, uint16_t addr);
+	void (*on_resume)(void);
+} dbg_frontend_t;
+
+void dbg_register_frontend(const dbg_frontend_t *fe);
 
 #endif // _DEBUGGER_CORE_H

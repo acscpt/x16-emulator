@@ -2,9 +2,9 @@
 //
 // SDL-free core of the X16 emulator debugger. Owns the state machine,
 // the single user breakpoint, and the step / step-over machinery.
-// Frontends drive this via the dbg_* functions and react to state
-// transitions through the dbg_frontend_on_break / on_resume callbacks
-// (declared in debugger_core.h, defined by the active frontend).
+// Frontends drive the core via the dbg_* functions and react to state
+// transitions through the dbg_frontend_t callbacks registered with
+// dbg_register_frontend().
 
 #include "debugger_core.h"
 #include "memory.h"
@@ -37,7 +37,22 @@ static int      stopped_pc_x16Bank = -1;
 static struct breakpoint user_bp = { -1, 0, -1 };
 static struct breakpoint step_bp = { -1, 0, -1 };
 
+// Active frontend. NULL until dbg_register_frontend() is called.
+static const dbg_frontend_t *active_frontend = NULL;
+
 // ----- Helpers -----
+
+static void notify_break(dbg_break_reason_t r, uint8_t bank, uint16_t pc) {
+	if (active_frontend && active_frontend->on_break) {
+		active_frontend->on_break(r, bank, pc);
+	}
+}
+
+static void notify_resume(void) {
+	if (active_frontend && active_frontend->on_resume) {
+		active_frontend->on_resume();
+	}
+}
 
 // Returns the X16 RAM/ROM bank visible at `pc` (or -1 outside the
 // banked window). Equivalent to debugger.c's static getCurrentBank().
@@ -62,7 +77,7 @@ static void enter_stop(dbg_break_reason_t reason) {
 	stopped_pc         = regs.pc;
 	stopped_pc_bank    = regs.k;
 	stopped_pc_x16Bank = dbg_x16_bank(regs.pc, regs.k);
-	dbg_frontend_on_break(reason, stopped_pc_bank, (uint16_t)stopped_pc);
+	notify_break(reason, stopped_pc_bank, (uint16_t)stopped_pc);
 }
 
 // ----- Public API -----
@@ -122,7 +137,7 @@ void dbg_continue(void) {
 	currentMode    = DMODE_RUN;
 	debugCPUClocks = clockticks6502;
 	timing_init();
-	dbg_frontend_on_resume();
+	notify_resume();
 }
 
 void dbg_step(void) {
@@ -144,7 +159,7 @@ void dbg_step_over(void) {
 		currentMode     = DMODE_RUN;
 		debugCPUClocks  = clockticks6502;
 		timing_init();
-		dbg_frontend_on_resume();
+		notify_resume();
 	} else {
 		dbg_step();
 	}
@@ -164,4 +179,8 @@ struct breakpoint dbg_get_breakpoint(void) {
 
 uint32_t dbg_clocks_since_resume(void) {
 	return clockticks6502 - debugCPUClocks;
+}
+
+void dbg_register_frontend(const dbg_frontend_t *fe) {
+	active_frontend = fe;
 }
