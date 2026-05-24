@@ -92,9 +92,6 @@ static void DEBUGExecCmd();
 
 #define DBGMAX_ZERO_PAGE_REGISTERS 16
 
-#define DDUMP_RAM	0
-#define DDUMP_VERA	1
-
 enum DBG_CMD { CMD_DUMP_MEM='m', CMD_DUMP_VERA='v', CMD_DISASM='d', CMD_SET_BANK='b', CMD_SET_REGISTER='r', CMD_FILL_MEMORY='f' };
 
 // RGB colours
@@ -113,19 +110,12 @@ const SDL_Color col_vram_other  = {128, 128, 128, 255};
 
 int showDebugOnRender = 0;                            // Used to trigger rendering in video.c
 int showFullDisplay = 0;                              // If non-zero show the whole thing.
-int currentPC = -1;                                   // Current disassembly PC value (16-bit).
-uint8_t currentPCBank = 0;                            // Current disassembly PC bank (like regs.k) value.
-int currentData = 0;                                  // Current data display address (RAM or VRAM).
-int currentPCX16Bank = -1;                            // Current disassembly X16 RAM/ROM bank, -1 unless $A000-$FFFF, .K = 0
-int currentX16Bank = -1;                              // Current data display (memory dump) X16 RAM/ROM bank
 
-int dumpmode          = DDUMP_RAM;
-
-// State machine, breakpoints (user + step), and step/run clock tracking
-// moved to debugger_core.c in Phase 2 of the SDL decoupling refactor.
-// The variables above (currentPC etc.) are SDL panel-cursor state and
-// remain here; the core surfaces its state via dbg_get_mode(),
-// dbg_get_breakpoint(), and dbg_clocks_since_resume() for the render path.
+// State machine, breakpoints, step/run clock tracking, and view-cursor
+// state (disasm cursor, data cursor, RAM/ROM view bank, RAM/VRAM mode)
+// all live in debugger_core.c. The SDL frontend reads them via
+// dbg_get_view_*() and writes them via dbg_set_view_*(); the stdio
+// frontend uses the same accessors so both share one source of truth.
 
 char cmdLine[64]= "";                                 // command line buffer
 int currentPosInLine= 0;                              // cursor position in the buffer (NOT USED _YET_)
@@ -148,16 +138,14 @@ static inline int getCurrentBank(int pc, uint8_t bank) {
 // *******************************************************************************************
 //
 //			Frontend callbacks. Called by debugger_core when the state machine
-//			transitions into / out of the stopped state. Update SDL panel
-//			cursors here so the render path picks up the new PC immediately.
+//			transitions into / out of the stopped state. The core syncs the
+//			shared view_pc cursor to the new stopped PC before invoking
+//			on_break, so neither callback needs to touch cursor state.
 //
 // *******************************************************************************************
 
 static void sdl_on_break(dbg_break_reason_t reason, uint8_t bank, uint16_t pc) {
-	(void)reason;
-	currentPC        = pc;
-	currentPCBank    = bank;
-	currentPCX16Bank = getCurrentBank(pc, bank);
+	(void)reason; (void)bank; (void)pc;
 }
 
 static void sdl_on_resume(void) {
@@ -185,10 +173,10 @@ static const dbg_frontend_t sdl_frontend = {
 int  DEBUGGetCurrentStatus(void) {
 
 	SDL_Event event;
-	if (currentPC < 0) currentPC = regs.pc;                                      // Lazy init of panel cursor.
 
 	// Advance the state machine. Detects step completion and breakpoint
 	// hits; fires dbg_frontend_on_break() on transitions into stopped.
+	// dbg_get_view_pc() lazy-initialises the disasm cursor to regs.pc.
 	dbg_tick_t tick = dbg_tick();
 	(void)tick; // Phase 2: dbg_tick never returns QUIT; reserved for Phase 3.
 
@@ -198,8 +186,18 @@ int  DEBUGGetCurrentStatus(void) {
 		dbg_break(DBG_BREAK_USER);
 	}
 
-	if (currentPCX16Bank<0 && currentPC >= 0xA000 && currentPCBank == 0) {
-		currentPCX16Bank = currentPC < 0xC000 ? memory_get_ram_bank() : memory_get_rom_bank();
+	// Post-init sync: if the disasm cursor sits inside the banked window
+	// with PB=0 but no x16Bank was chosen, default to the currently-
+	// selected RAM/ROM bank so the panel shows something sensible.
+	{
+		uint8_t  pcBank;
+		uint16_t pc;
+		int      x16Bank;
+		dbg_get_view_pc(&pcBank, &pc, &x16Bank);
+		if (x16Bank < 0 && pc >= 0xA000 && pcBank == 0) {
+			x16Bank = pc < 0xC000 ? memory_get_ram_bank() : memory_get_rom_bank();
+			dbg_set_view_pc(pcBank, pc, x16Bank);
+		}
 	}
 
 	if (dbg_get_mode() != DMODE_RUN) {                                  // Not running, we own the keyboard.
@@ -281,6 +279,18 @@ void DEBUGBreakToDebugger(void) {
 
 static void DEBUGHandleKeyEvent(SDL_Keycode key, int isShift) {
 
+	// Snapshot the view cursor into locals matching the pre-refactor
+	// names, mutate locally, then write back once at the end. Keeps the
+	// switch bodies identical to the pre-refactor logic.
+	uint8_t  currentPCBank;
+	uint16_t pc16;
+	int      currentPCX16Bank;
+	dbg_get_view_pc(&currentPCBank, &pc16, &currentPCX16Bank);
+	int      currentPC      = (int)pc16;
+	int      currentData    = (int)dbg_get_view_data();
+	int      currentX16Bank = dbg_get_view_x16bank();
+	int      dumpmode       = dbg_get_view_mode();
+
 	switch(key) {
 
 		case DBGKEY_STEP:      // Single step (F11 by default)
@@ -345,7 +355,7 @@ static void DEBUGHandleKeyEvent(SDL_Keycode key, int isShift) {
 					currentPCX16Bank = -1;
 				}
 			} else {
-				if (dumpmode == DDUMP_RAM) {
+				if (dumpmode == DBG_VIEW_RAM) {
 					currentData = (currentData + 0x100) & (is_gen2 ? 0xFFFFFF : 0xFFFF);
 				} else {
 					currentData = (currentData + 0x200) & 0x1FFFF;
@@ -360,7 +370,7 @@ static void DEBUGHandleKeyEvent(SDL_Keycode key, int isShift) {
 					currentPCX16Bank = -1;
 				}
 			} else {
-				if (dumpmode == DDUMP_RAM) {
+				if (dumpmode == DBG_VIEW_RAM) {
 					currentData = (currentData - 0x100) & (is_gen2 ? 0xFFFFFF : 0xFFFF);
 				} else {
 					currentData = (currentData - 0x200) & 0x1FFFF;
@@ -375,7 +385,7 @@ static void DEBUGHandleKeyEvent(SDL_Keycode key, int isShift) {
 					currentPCX16Bank = -1;
 				}
 			} else {
-				if (dumpmode == DDUMP_RAM) {
+				if (dumpmode == DBG_VIEW_RAM) {
 					currentData = (currentData + 0x08) & (is_gen2 ? 0xFFFFFF : 0xFFFF);
 				} else {
 					currentData = (currentData + 0x10) & 0x1FFFF;
@@ -390,7 +400,7 @@ static void DEBUGHandleKeyEvent(SDL_Keycode key, int isShift) {
 					currentPCX16Bank = -1;
 				}
 			} else {
-				if (dumpmode == DDUMP_RAM) {
+				if (dumpmode == DBG_VIEW_RAM) {
 					currentData = (currentData - 0x08) & (is_gen2 ? 0xFFFFFF : 0xFFFF);
 				} else {
 					currentData = (currentData - 0x10) & 0x1FFFF;
@@ -402,10 +412,22 @@ static void DEBUGHandleKeyEvent(SDL_Keycode key, int isShift) {
 			if(DEBUGEditCmdLine(key)) {
 				// printf("cmd line: %s\n", cmdLine);
 				DEBUGExecCmd();
+				// DEBUGExecCmd updates the shared cursor itself; re-read
+				// so any pending writeback below doesn't clobber it.
+				dbg_get_view_pc(&currentPCBank, &pc16, &currentPCX16Bank);
+				currentPC      = (int)pc16;
+				currentData    = (int)dbg_get_view_data();
+				currentX16Bank = dbg_get_view_x16bank();
+				dumpmode       = dbg_get_view_mode();
 			}
 			break;
 	}
 
+	// Write the (possibly mutated) cursor back to the shared state.
+	dbg_set_view_pc(currentPCBank, (uint16_t)(currentPC & 0xFFFF), currentPCX16Bank);
+	dbg_set_view_data((uint32_t)currentData);
+	dbg_set_view_x16bank(currentX16Bank);
+	dbg_set_view_mode(dumpmode);
 }
 
 static void DEBUGBuildCmdLine(char *text) {
@@ -456,6 +478,16 @@ static void DEBUGExecCmd() {
 	char cmd;
 	char *line= ltrim(cmdLine);
 
+	// Snapshot view cursor into locals; write back at the end.
+	uint8_t  currentPCBank;
+	uint16_t pc16;
+	int      currentPCX16Bank;
+	dbg_get_view_pc(&currentPCBank, &pc16, &currentPCX16Bank);
+	int      currentPC      = (int)pc16;
+	int      currentData    = (int)dbg_get_view_data();
+	int      currentX16Bank = dbg_get_view_x16bank();
+	int      dumpmode       = dbg_get_view_mode();
+
 	cmd= *line;
 	if(*line) {
 		line++;
@@ -475,14 +507,14 @@ static void DEBUGExecCmd() {
 			}
 			addr = number & (is_gen2 ? 0xFFFFFF : 0xFFFF);
 			currentData = addr;
-			dumpmode    = DDUMP_RAM;
+			dumpmode    = DBG_VIEW_RAM;
 			break;
 
 		case CMD_DUMP_VERA:
 			if (sscanf(line, "%x", &number) == 1) {
 				addr = number & 0x1FFFF;
 				currentData = addr;
-				dumpmode    = DDUMP_VERA;
+				dumpmode    = DBG_VIEW_VRAM;
 			}
 			break;
 
@@ -490,7 +522,7 @@ static void DEBUGExecCmd() {
 			size = 1;
 			incr = 1;
 			if (sscanf(line, "%x %x %d %d", &addr, &number, &size, &incr) >= 2) {
-				if (dumpmode == DDUMP_RAM) {
+				if (dumpmode == DBG_VIEW_RAM) {
 					addr &= 0xFFFFFF;
 					do {
 						if (addr >= 0xC000 && addr < 0x10000) {
@@ -611,6 +643,12 @@ static void DEBUGExecCmd() {
 			break;
 	}
 
+	// Write the (possibly mutated) cursor back to the shared state.
+	dbg_set_view_pc(currentPCBank, (uint16_t)(currentPC & 0xFFFF), currentPCX16Bank);
+	dbg_set_view_data((uint32_t)currentData);
+	dbg_set_view_x16bank(currentX16Bank);
+	dbg_set_view_mode(dumpmode);
+
 	currentPosInLine= currentLineLen= *cmdLine= 0;
 }
 
@@ -631,14 +669,19 @@ void DEBUGRenderDisplay(int width, int height) {
 	SDL_SetRenderDrawColor(dbgRenderer,0,0,0,SDL_ALPHA_OPAQUE);
 	SDL_RenderFillRect(dbgRenderer,&rc);
 
+	uint16_t currentPC;
+	dbg_get_view_pc(NULL, &currentPC, NULL);
+	uint32_t currentData = dbg_get_view_data();
+	int      dumpmode    = dbg_get_view_mode();
+
 	int register_lines = DEBUGRenderRegisters();							// Draw register name and values.
-	DEBUGRenderCode(register_lines, currentPC);							// Render 6502 disassembly.
-	if (dumpmode == DDUMP_RAM) {
+	DEBUGRenderCode(register_lines, (int)currentPC);						// Render 6502 disassembly.
+	if (dumpmode == DBG_VIEW_RAM) {
 		DEBUGRenderData(register_lines + 1, currentData);
 		int zp_lines = DEBUGRenderZeroPageRegisters(register_lines + 1);
 		DEBUGRenderVERAState(zp_lines + 1);
 	} else {
-		DEBUGRenderVRAM(register_lines + 1, currentData);
+		DEBUGRenderVRAM(register_lines + 1, (int)currentData);
 	}
 	DEBUGRenderStack(register_lines);
 
@@ -714,6 +757,7 @@ static int DEBUGRenderZeroPageRegisters(int y) {
 // *******************************************************************************************
 
 static void DEBUGRenderData(int y,uint32_t data) {
+	int currentX16Bank = dbg_get_view_x16bank();
 	while (y < DBG_HEIGHT-2) {									// To bottom of screen
 		DEBUGAddress(DBG_MEMX, y, (uint8_t)currentX16Bank, data & 0xFFFF, data >> 16, col_label);	// Show label.
 
@@ -762,6 +806,9 @@ static void DEBUGRenderCode(int lines, int initialPC) {
 	uint8_t implied_status = regs.status;
 	uint8_t implied_e = regs.e;
 	uint8_t opcode, operand, carry;
+	uint8_t currentPCBank;
+	int     currentPCX16Bank;
+	dbg_get_view_pc(&currentPCBank, NULL, &currentPCX16Bank);
 	int implied_x16_bank = currentPCX16Bank;
 
 	for (int y = 0; y < lines; y++) { 							// Each line

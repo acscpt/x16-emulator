@@ -212,6 +212,41 @@ int dbg_disasm_line(uint8_t bank, uint16_t addr, dbg_disasm_line_t *out);
 bool dbg_write_register(const char *name, uint32_t value);
 
 // =========================================================================
+// View-cursor state
+// =========================================================================
+//
+// Shared cursor state used by the SDL panel renderer and the stdio REPL.
+// The disasm cursor (view_pc) follows the stopped PC after every break
+// (matching the pre-refactor SDL on_break behaviour). The data cursor
+// (view_data) and the view bank (view_x16bank) are explicit user
+// navigation that persists across commands until changed. view_mode
+// selects RAM vs VRAM for the data panel; values match the pre-refactor
+// DDUMP_* constants so external callers are unaffected.
+
+#define DBG_VIEW_RAM  0
+#define DBG_VIEW_VRAM 1
+
+// Disasm cursor: bank + 16-bit addr + X16 RAM/ROM view bank.
+// out_x16bank == -1 means "outside the $A000-$FFFF window".
+void dbg_get_view_pc(uint8_t *out_bank, uint16_t *out_addr, int *out_x16bank);
+void dbg_set_view_pc(uint8_t bank, uint16_t addr, int x16bank);
+
+// Data cursor. 24 bits: high byte is the CPU program bank (used in
+// gen2 / 65C816 mode); low 16 bits are the address within that bank.
+uint32_t dbg_get_view_data(void);
+void     dbg_set_view_data(uint32_t addr);
+
+// View bank for the banked $A000-$FFFF window. -1 = follow the CPU's
+// currently-selected RAM/ROM bank; otherwise the panel shows that
+// specific X16 bank without changing CPU state.
+int  dbg_get_view_x16bank(void);
+void dbg_set_view_x16bank(int x16bank);
+
+// DBG_VIEW_RAM or DBG_VIEW_VRAM.
+int  dbg_get_view_mode(void);
+void dbg_set_view_mode(int mode);
+
+// =========================================================================
 // Frontend abstraction
 // =========================================================================
 //

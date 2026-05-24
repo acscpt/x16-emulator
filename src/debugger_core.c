@@ -42,6 +42,17 @@ static int      stopped_pc_x16Bank = -1;
 static struct breakpoint user_bp = { -1, 0, -1 };
 static struct breakpoint step_bp = { -1, 0, -1 };
 
+// View-cursor state (see debugger_core.h "View-cursor state" section).
+// view_pc == -1 is the lazy-init sentinel; the first access populates
+// from regs.pc, matching the pre-refactor SDL `if (currentPC < 0)
+// currentPC = regs.pc` behaviour.
+static int      view_pc          = -1;
+static uint8_t  view_pc_bank     = 0;
+static int      view_pc_x16bank  = -1;
+static uint32_t view_data        = 0;
+static int      view_x16bank     = -1;
+static int      view_mode        = DBG_VIEW_RAM;
+
 // Active frontend. NULL until dbg_register_frontend() is called.
 static const dbg_frontend_t *active_frontend = NULL;
 
@@ -73,15 +84,19 @@ static inline bool hit_bp(int pc, uint8_t bank, struct breakpoint bp) {
 	return (pc == bp.pc) && (bank == bp.bank) && (dbg_x16_bank(pc, bank) == bp.x16Bank);
 }
 
-// Transition into the stopped state. Caches the stopped PC and notifies
-// the active frontend. Does NOT clear the step breakpoint -- that is only
-// cleared when a breakpoint hit (user or step) is what triggers the stop,
-// matching pre-refactor behavior at debugger.c:191-193.
+// Transition into the stopped state. Caches the stopped PC, syncs the
+// view (disasm) cursor to the new PC, and notifies the active frontend.
+// Does NOT clear the step breakpoint -- that is only cleared when a
+// breakpoint hit (user or step) is what triggers the stop, matching
+// pre-refactor behavior at debugger.c:191-193.
 static void enter_stop(dbg_break_reason_t reason) {
 	currentMode        = DMODE_STOP;
 	stopped_pc         = regs.pc;
 	stopped_pc_bank    = regs.k;
 	stopped_pc_x16Bank = dbg_x16_bank(regs.pc, regs.k);
+	view_pc            = regs.pc;
+	view_pc_bank       = regs.k;
+	view_pc_x16bank    = stopped_pc_x16Bank;
 	notify_break(reason, stopped_pc_bank, (uint16_t)stopped_pc);
 }
 
@@ -184,6 +199,53 @@ struct breakpoint dbg_get_breakpoint(void) {
 
 uint32_t dbg_clocks_since_resume(void) {
 	return clockticks6502 - debugCPUClocks;
+}
+
+// ----- View-cursor accessors -----
+
+static void view_lazy_init(void) {
+	if (view_pc < 0) {
+		view_pc         = regs.pc;
+		view_pc_bank    = regs.k;
+		view_pc_x16bank = dbg_x16_bank(regs.pc, regs.k);
+	}
+}
+
+void dbg_get_view_pc(uint8_t *out_bank, uint16_t *out_addr, int *out_x16bank) {
+	view_lazy_init();
+	if (out_bank)    *out_bank    = view_pc_bank;
+	if (out_addr)    *out_addr    = (uint16_t)view_pc;
+	if (out_x16bank) *out_x16bank = view_pc_x16bank;
+}
+
+void dbg_set_view_pc(uint8_t bank, uint16_t addr, int x16bank) {
+	view_pc         = addr;
+	view_pc_bank    = bank;
+	view_pc_x16bank = x16bank;
+}
+
+uint32_t dbg_get_view_data(void) {
+	return view_data;
+}
+
+void dbg_set_view_data(uint32_t addr) {
+	view_data = addr;
+}
+
+int dbg_get_view_x16bank(void) {
+	return view_x16bank;
+}
+
+void dbg_set_view_x16bank(int x16bank) {
+	view_x16bank = x16bank;
+}
+
+int dbg_get_view_mode(void) {
+	return view_mode;
+}
+
+void dbg_set_view_mode(int mode) {
+	view_mode = mode;
 }
 
 void dbg_register_frontend(const dbg_frontend_t *fe) {
