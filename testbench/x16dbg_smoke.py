@@ -362,8 +362,11 @@ def main():
 		time.sleep(0.02)
 		_, events = d.cmd("brk")
 		check("brk after c", any(e.startswith("* BRK USER ") for e in events), events)
-		data, _ = d.cmd("r")            # `r` aliases `reg`
-		check("alias 'r' dumps registers", "mode=" in data[0], data)
+		# `r` is now the SDL-equivalent set-register command; `reg` is the
+		# explicit dump verb.
+		d.cmd("r a 7e")
+		data, _ = d.cmd("reg")
+		check("r <name> <hex> set the register", "a=7e" in data[0], data)
 
 		d.cmd("rst")
 		# rst by itself doesn't change mode; we should still be in STOP.

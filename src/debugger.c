@@ -523,35 +523,9 @@ static void DEBUGExecCmd() {
 			incr = 1;
 			if (sscanf(line, "%x %x %d %d", &addr, &number, &size, &incr) >= 2) {
 				if (dumpmode == DBG_VIEW_RAM) {
-					addr &= 0xFFFFFF;
-					do {
-						if (addr >= 0xC000 && addr < 0x10000) {
-							// Nop.
-						} else if (addr >= 0xA000 && addr < 0xC000) {
-							BRAM[(currentX16Bank << 13) + addr - 0xA000] = number;
-						} else if ((addr >> 16) < num_banks) {
-							RAM[addr] = number;
-						}
-						if (incr) {
-							addr += incr;
-						} else {
-							++addr;
-						}
-						addr &= 0xFFFFFF;
-						--size;
-					} while (size > 0);
+					dbg_fill_mem_buffer((uint32_t)addr, currentX16Bank, (uint8_t)number, (uint32_t)size, incr);
 				} else {
-					addr &= 0x1FFFF;
-					do {
-						video_space_write(addr, number);
-						if (incr) {
-							addr += incr;
-						} else {
-							++addr;
-						}
-						addr &= 0x1FFFF;
-						--size;
-					} while (size > 0);
+					dbg_fill_vram_buffer((uint32_t)addr, (uint8_t)number, (uint32_t)size, incr);
 				}
 			}
 			break;

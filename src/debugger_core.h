@@ -182,10 +182,21 @@ void dbg_get_vera(dbg_vera_snapshot_t *out);
 uint8_t dbg_read_mem(uint8_t bank, uint16_t addr, int16_t x16Bank);
 
 // Writes always go through write6502, which targets the currently-selected
-// bank. SDL's bank-aware fill (its `f` command does manual buffer writes)
-// is an exception and stays in the SDL frontend.
+// bank.
 void    dbg_write_mem(uint8_t bank, uint16_t addr, uint8_t value);
 void    dbg_fill_mem(uint8_t bank, uint16_t addr, uint8_t value, uint16_t len);
+
+// Fill RAM / BRAM directly, bypassing write6502 (and therefore I/O
+// side-effects in the $9F00-$9FFF range). Mirrors the SDL `f` command's
+// behaviour: addresses in ROM range are no-ops, $A000-$BFFF writes go
+// to BRAM indexed by x16bank, base RAM is indexed by the 24-bit addr.
+// `x16bank < 0` falls back to the CPU's currently-selected RAM bank.
+// `incr == 0` is treated as 1.
+void    dbg_fill_mem_buffer(uint32_t addr, int x16bank, uint8_t value, uint32_t count, int incr);
+
+// Fill VRAM. Same semantics as repeated dbg_write_vram() but with an
+// explicit increment so callers can stride.
+void    dbg_fill_vram_buffer(uint32_t addr, uint8_t value, uint32_t count, int incr);
 
 // VRAM byte access (VERA address space, 17-bit).
 uint8_t dbg_read_vram(uint32_t addr);

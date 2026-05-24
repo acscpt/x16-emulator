@@ -16,10 +16,13 @@
 
 #include <string.h>
 
-// `regs` and `RAM` live in glue.h, but glue.h transitively pulls in SDL --
-// which would defeat the point of a SDL-free core. Extern them directly.
-extern struct regs regs;
-extern uint8_t    *RAM;
+// `regs`, `RAM`, `BRAM`, and `num_banks` live in glue.h, but glue.h
+// transitively pulls in SDL -- which would defeat the point of a SDL-free
+// core. Extern them directly.
+extern struct regs  regs;
+extern uint8_t     *RAM;
+extern uint8_t     *BRAM;
+extern uint16_t     num_banks;
 
 // ----- File-static state (moved here from debugger.c) -----
 
@@ -342,6 +345,30 @@ void dbg_write_mem(uint8_t bank, uint16_t addr, uint8_t value) {
 void dbg_fill_mem(uint8_t bank, uint16_t addr, uint8_t value, uint16_t len) {
 	for (uint16_t i = 0; i < len; i++) {
 		write6502((uint16_t)(addr + i), bank, value);
+	}
+}
+
+void dbg_fill_mem_buffer(uint32_t addr, int x16bank, uint8_t value, uint32_t count, int incr) {
+	if (incr == 0) incr = 1;
+	if (x16bank < 0) x16bank = memory_get_ram_bank();
+	for (uint32_t i = 0; i < count; i++) {
+		addr &= 0xFFFFFF;
+		if (addr >= 0xC000 && addr < 0x10000) {
+			// ROM range: no-op (matches SDL `f`).
+		} else if (addr >= 0xA000 && addr < 0xC000) {
+			BRAM[(x16bank << 13) + addr - 0xA000] = value;
+		} else if ((addr >> 16) < num_banks) {
+			RAM[addr] = value;
+		}
+		addr = (addr + (uint32_t)incr) & 0xFFFFFF;
+	}
+}
+
+void dbg_fill_vram_buffer(uint32_t addr, uint8_t value, uint32_t count, int incr) {
+	if (incr == 0) incr = 1;
+	for (uint32_t i = 0; i < count; i++) {
+		video_space_write(addr & 0x1FFFF, value);
+		addr = (addr + (uint32_t)incr) & 0x1FFFF;
 	}
 }
 

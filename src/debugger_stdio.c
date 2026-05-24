@@ -152,6 +152,28 @@ static bool parse_hex(const char *s, uint32_t *out, uint32_t max) {
 	return true;
 }
 
+// Parse "<addr>" or "<bank>:<addr>".  *out_bank = -1 when the bank
+// prefix is absent (caller decides whether to leave view_x16bank alone).
+static bool parse_bank_addr(const char *s, int *out_bank, uint32_t *out_addr, uint32_t addr_max) {
+	if (!s || !*s) return false;
+	const char *colon = strchr(s, ':');
+	if (colon) {
+		char     bbuf[16];
+		size_t   blen = (size_t)(colon - s);
+		if (blen == 0 || blen >= sizeof(bbuf)) return false;
+		memcpy(bbuf, s, blen);
+		bbuf[blen] = '\0';
+		uint32_t bank;
+		if (!parse_hex(bbuf, &bank, 0xff)) return false;
+		if (!parse_hex(colon + 1, out_addr, addr_max)) return false;
+		*out_bank = (int)bank;
+	} else {
+		if (!parse_hex(s, out_addr, addr_max)) return false;
+		*out_bank = -1;
+	}
+	return true;
+}
+
 // ---------------------------------------------------------------------------
 // Detach flag (set by `qit`).
 // ---------------------------------------------------------------------------
@@ -529,6 +551,212 @@ static void cmd_qit(int argc, char **argv) {
 	rdy();
 }
 
+// ---------------------------------------------------------------------------
+// SDL-equivalent stateful commands.
+//
+// These mutate the shared view cursor (debugger_core's view_pc /
+// view_data / view_x16bank / view_mode) and dump using SDL-style panel
+// defaults, so a user's mental model carries over between the SDL TUI
+// and the stdio REPL: same commands, same effects, same cognitive shape.
+//
+// The stateless explicit-args commands (mem / dis / vmr / wmm / fil /
+// srg / sbp / cbp / lbp) coexist; harnesses prefer those because they
+// don't touch the cursor.
+// ---------------------------------------------------------------------------
+
+// One row of the RAM data panel: addr + 16 hex bytes + ASCII column.
+static void dump_ram_row(uint32_t row_addr_24, int x16bank) {
+	uint8_t bytes[16];
+	for (int i = 0; i < 16; i++) {
+		uint32_t a = (row_addr_24 + i) & 0xFFFFFF;
+		bytes[i] = dbg_read_mem((uint8_t)(a >> 16), (uint16_t)(a & 0xFFFF), x16bank);
+	}
+	// print_hex_ascii_line takes a 16-bit addr; pass the low word with
+	// the high byte implicit in the dump's starting bank context.
+	print_hex_ascii_line(row_addr_24 & 0xFFFF, 4, bytes, 16);
+}
+
+static void dump_view_data_ram(void) {
+	uint32_t base    = dbg_get_view_data();
+	int      x16bank = dbg_get_view_x16bank();
+	for (int row = 0; row < 16; row++) {
+		dump_ram_row((base + row * 16) & 0xFFFFFF, x16bank);
+	}
+}
+
+static void dump_view_data_vram(void) {
+	uint32_t base = dbg_get_view_data() & 0x1FFFF;
+	uint8_t  bytes[16];
+	for (int row = 0; row < 16; row++) {
+		uint32_t row_addr = (base + row * 16) & 0x1FFFF;
+		for (int i = 0; i < 16; i++) {
+			bytes[i] = dbg_read_vram((row_addr + i) & 0x1FFFF);
+		}
+		print_hex_ascii_line(row_addr, 5, bytes, 16);
+	}
+}
+
+static void dump_view_disasm(int count) {
+	uint8_t  bank;
+	uint16_t pc;
+	dbg_get_view_pc(&bank, &pc, NULL);
+	uint16_t cur = pc;
+	for (int i = 0; i < count; i++) {
+		dbg_disasm_line_t line;
+		int len = dbg_disasm_line(bank, cur, &line);
+		printf("%02x:%04x:", bank, cur);
+		for (int j = 0; j < line.byte_count; j++) printf(" %02x", line.bytes[j]);
+		for (int j = line.byte_count; j < 4; j++) printf("   ");
+		printf("  %s\n", line.text);
+		cur += (uint16_t)len;
+	}
+}
+
+// Re-compute x16Bank for a given PC, matching debugger.c's getCurrentBank().
+static int view_pc_x16bank_for(uint16_t pc, uint8_t bank) {
+	if (pc >= 0xA000 && bank == 0) {
+		return pc < 0xC000 ? memory_get_ram_bank() : memory_get_rom_bank();
+	}
+	return -1;
+}
+
+static void cmd_m(int argc, char **argv) {
+	if (argc > 1) { err_msg("usage: m [<bank>:<addr>]"); return; }
+	if (argc == 1) {
+		int      bank;
+		uint32_t addr;
+		if (!parse_bank_addr(argv[0], &bank, &addr, 0xFFFFFF)) {
+			err_msg("usage: m [<bank>:<addr>]");
+			return;
+		}
+		if (bank >= 0) dbg_set_view_x16bank(bank);
+		dbg_set_view_data(addr);
+		dbg_set_view_mode(DBG_VIEW_RAM);
+	} else {
+		dbg_set_view_mode(DBG_VIEW_RAM);
+	}
+	dump_view_data_ram();
+	rdy();
+}
+
+static void cmd_d(int argc, char **argv) {
+	if (argc > 1) { err_msg("usage: d [<bank>:<addr>]"); return; }
+	if (argc == 1) {
+		int      bank;
+		uint32_t addr;
+		if (!parse_bank_addr(argv[0], &bank, &addr, 0xFFFF)) {
+			err_msg("usage: d [<bank>:<addr>]");
+			return;
+		}
+		uint8_t  cur_bank;
+		dbg_get_view_pc(&cur_bank, NULL, NULL);
+		uint8_t new_bank = (bank >= 0) ? (uint8_t)bank : cur_bank;
+		int x16bank = (bank >= 0 && (uint16_t)addr >= 0xA000) ? bank
+		              : view_pc_x16bank_for((uint16_t)addr, new_bank);
+		dbg_set_view_pc(new_bank, (uint16_t)addr, x16bank);
+	}
+	dump_view_disasm(16);
+	rdy();
+}
+
+static void cmd_v(int argc, char **argv) {
+	if (argc > 1) { err_msg("usage: v [<addr>]"); return; }
+	if (argc == 1) {
+		uint32_t addr;
+		if (!parse_hex(argv[0], &addr, 0x1FFFF)) {
+			err_msg("usage: v [<addr>]  (addr <= 1ffff)");
+			return;
+		}
+		dbg_set_view_data(addr);
+	}
+	dbg_set_view_mode(DBG_VIEW_VRAM);
+	dump_view_data_vram();
+	rdy();
+}
+
+static void cmd_b(int argc, char **argv) {
+	uint32_t bank;
+	if (argc != 2 || !parse_hex(argv[1], &bank, 0xff)) {
+		err_msg("usage: b ram|rom <bank>");
+		return;
+	}
+	if (!strcmp(argv[0], "ram")) {
+		memory_set_ram_bank((uint8_t)bank);
+	} else if (!strcmp(argv[0], "rom")) {
+		memory_set_rom_bank((uint8_t)bank);
+	} else {
+		err_msg("usage: b ram|rom <bank>");
+		return;
+	}
+	rdy();
+}
+
+static void cmd_r(int argc, char **argv) {
+	uint32_t val;
+	if (argc != 2 || !parse_hex(argv[1], &val, 0xffff)) {
+		err_msg("usage: r <name> <hex>");
+		return;
+	}
+	if (!dbg_write_register(argv[0], val)) {
+		err_msg("unknown register");
+		return;
+	}
+	rdy();
+}
+
+static void cmd_f(int argc, char **argv) {
+	uint32_t addr, value;
+	uint32_t count = 1, incr = 1;
+	if (argc < 2 || argc > 4
+	    || !parse_hex(argv[0], &addr,  0xFFFFFF)
+	    || !parse_hex(argv[1], &value, 0xff)) {
+		err_msg("usage: f <addr> <val> [<count>] [<incr>]");
+		return;
+	}
+	if (argc >= 3 && !parse_hex(argv[2], &count, 0x1000000)) {
+		err_msg("count must be hex");
+		return;
+	}
+	if (argc == 4 && !parse_hex(argv[3], &incr, 0xff)) {
+		err_msg("incr must be hex");
+		return;
+	}
+	if (dbg_get_view_mode() == DBG_VIEW_RAM) {
+		dbg_fill_mem_buffer(addr, dbg_get_view_x16bank(), (uint8_t)value, count, (int)incr);
+	} else {
+		dbg_fill_vram_buffer(addr, (uint8_t)value, count, (int)incr);
+	}
+	rdy();
+}
+
+static void cmd_home(int argc, char **argv) {
+	(void)argv;
+	if (argc != 0) { err_msg("home takes no args"); return; }
+	dbg_set_view_pc(regs.k, regs.pc, view_pc_x16bank_for(regs.pc, regs.k));
+	dump_view_disasm(16);
+	rdy();
+}
+
+static void cmd_tb(int argc, char **argv) {
+	(void)argv;
+	if (argc != 0) { err_msg("tb takes no args"); return; }
+	uint8_t  bank;
+	uint16_t pc;
+	int      x16bank;
+	dbg_get_view_pc(&bank, &pc, &x16bank);
+	struct breakpoint bp = dbg_get_breakpoint();
+	if (bp.pc == (int)pc && bp.bank == bank && bp.x16Bank == x16bank) {
+		struct breakpoint clear = { .pc = -1, .bank = 0, .x16Bank = -1 };
+		dbg_set_breakpoint(clear);
+		printf("* BP CLEAR %02x:%04x\n", bank, pc);
+	} else {
+		struct breakpoint set = { .pc = (int)pc, .bank = bank, .x16Bank = x16bank };
+		dbg_set_breakpoint(set);
+		printf("* BP SET %02x:%04x\n", bank, pc);
+	}
+	rdy();
+}
+
 static void cmd_hlp(int argc, char **argv) {
 	(void)argv;
 	if (argc != 0) { err_msg("hlp takes no args"); return; }
@@ -539,23 +767,30 @@ static void cmd_hlp(int argc, char **argv) {
 	puts("  stp | s                             single step one instruction");
 	puts("  sov | n                             step over JSR/JSL/JML (else single-step)");
 	puts("  rst                                 reset CPU (not the whole machine)");
-	puts("breakpoints (single BP):");
+	puts("SDL-equivalent (operate on the shared view cursor):");
+	puts("  m [<bank>:<addr>]                   data cursor + dump 16 rows RAM");
+	puts("  d [<bank>:<addr>]                   disasm cursor + 16 instructions");
+	puts("  v [<addr>]                          data cursor + dump 16 rows VRAM");
+	puts("  b ram|rom <bank>                    set CPU's RAM/ROM bank register");
+	puts("  r <name> <hex>                      set register (pc/a/b/c/x/y/sp/p/k/db/dp/e)");
+	puts("  f <addr> <val> [<count>] [<incr>]   fill RAM or VRAM (bypasses I/O)");
+	puts("  home                                view_pc := regs.pc; dump disasm");
+	puts("  tb                                  toggle breakpoint at view_pc");
+	puts("breakpoints (single BP, explicit-args):");
 	puts("  sbp <bank> <addr>                   set user breakpoint");
 	puts("  cbp <bank> <addr>                   clear user breakpoint");
 	puts("  lbp                                 list breakpoints");
-	puts("registers:");
-	puts("  reg | r                             dump CPU registers");
-	puts("  srg <name> <hex>                    set register (pc/a/b/c/x/y/sp/p/k/db/dp/e)");
-	puts("memory (CPU bus):");
-	puts("  mem | m <bank> <addr> <count>       read memory (count <= 0x1000)");
+	puts("memory (explicit-args, stateless):");
+	puts("  mem <bank> <addr> <count>           read memory (count <= 0x1000)");
 	puts("  wmm <bank> <addr> <hex>...          write memory bytes");
-	puts("  fil <bank> <addr> <val> [<count>]   fill memory (count default 1)");
+	puts("  fil <bank> <addr> <val> [<count>]   fill memory through write6502");
 	puts("  find <bank> <start> <len> <byte>... find byte pattern in range");
-	puts("VRAM:");
 	puts("  vmr <addr> <count>                  read VRAM (count <= 0x1000)");
 	puts("  vmw <addr> <hex>...                 write VRAM bytes");
+	puts("  dis <bank> <addr> <count>           disassemble N instructions");
 	puts("inspection:");
-	puts("  dis | d <bank> <addr> <count>       disassemble N instructions");
+	puts("  reg                                 dump CPU registers");
+	puts("  srg <name> <hex>                    set register (explicit form of `r`)");
 	puts("  stk [<count>]                       stack top (default 16, max 0x40)");
 	puts("  zpr                                 direct-page R0..R15 register pairs");
 	puts("  vrg                                 VERA state snapshot");
@@ -579,29 +814,38 @@ static const struct {
 	const char *name;
 	cmd_fn      fn;
 } commands[] = {
-	// execution control (single-letter aliases for the common case)
+	// execution control (single-letter shell-style shortcuts)
 	{"brk",  cmd_brk},
 	{"cnt",  cmd_cnt},   {"c", cmd_cnt},
 	{"stp",  cmd_stp},   {"s", cmd_stp},
 	{"sov",  cmd_sov},   {"n", cmd_sov},   // n = "next"
 	{"rst",  cmd_rst},
-	// breakpoints
+	// SDL-equivalent stateful commands (operate on the shared view cursor)
+	{"m",    cmd_m},
+	{"d",    cmd_d},
+	{"v",    cmd_v},
+	{"b",    cmd_b},
+	{"r",    cmd_r},
+	{"f",    cmd_f},
+	{"home", cmd_home},
+	{"tb",   cmd_tb},
+	// breakpoints (explicit-args, stateless)
 	{"sbp",  cmd_sbp},
 	{"cbp",  cmd_cbp},
 	{"lbp",  cmd_lbp},
-	// registers
-	{"reg",  cmd_reg},   {"r", cmd_reg},
+	// registers (stateless)
+	{"reg",  cmd_reg},
 	{"srg",  cmd_srg},
-	// memory (RAM)
-	{"mem",  cmd_mem},   {"m", cmd_mem},
+	// memory (CPU bus, stateless)
+	{"mem",  cmd_mem},
 	{"wmm",  cmd_wmm},
 	{"fil",  cmd_fil},
 	{"find", cmd_find},
-	// memory (VRAM)
+	// memory (VRAM, stateless)
 	{"vmr",  cmd_vmr},
 	{"vmw",  cmd_vmw},
-	// disassembly
-	{"dis",  cmd_dis},   {"d", cmd_dis},
+	// disassembly (stateless)
+	{"dis",  cmd_dis},
 	// snapshot panels (parity with SDL)
 	{"stk",  cmd_stk},
 	{"zpr",  cmd_zpr},
