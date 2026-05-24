@@ -132,6 +132,7 @@ bool fullscreen = false;
 bool testbench = false;
 bool debugger_stdio_mode = false;
 bool enable_midline = false;
+int  exit_code = 0;            // bumped to 1 by the stdio frontend's `bail`
 bool ym2151_irq_support = false;
 char *cartridge_path = NULL;
 
@@ -1352,7 +1353,7 @@ main(int argc, char **argv)
 
 	main_shutdown();
 	memory_dump_usage_counts();
-	return 0;
+	return exit_code;
 }
 
 void main_shutdown() {

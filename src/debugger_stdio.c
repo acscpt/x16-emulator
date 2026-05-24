@@ -37,6 +37,8 @@ void debugger_stdio_shutdown(void) {}
 #include "memory.h"
 #include "cpu/fake6502.h"
 #include "cpu/registers.h"
+#include "version.h"
+#include "git_rev.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -118,6 +120,25 @@ static void err_msg(const char *msg) {
 	fflush(stdout);
 }
 
+static void emit_banner(void) {
+	fputs("\nCommander X16 Emulator r" VER " (" VER_NAME ")", stdout);
+#ifdef GIT_REV
+	fputs(", " GIT_REV, stdout);
+#endif
+	fputs("\n(C)2019, 2023 Michael Steil et al.\n", stdout);
+	fputs("All rights reserved. License: 2-clause BSD\n\n", stdout);
+	fflush(stdout);
+}
+
+// Per-input prompt. Always the same string, no trailing newline, in both
+// TTY and pipe modes: a host harness syncs on the byte-pattern "x16db > "
+// (read-until-suffix-match), and a terminal user sees a classic shell-
+// style prompt that they type their next command right after.
+static void emit_prompt(void) {
+	fputs("x16db > ", stdout);
+	fflush(stdout);
+}
+
 // ---------------------------------------------------------------------------
 // Argument parsing.
 // ---------------------------------------------------------------------------
@@ -136,6 +157,9 @@ static bool parse_hex(const char *s, uint32_t *out, uint32_t max) {
 // ---------------------------------------------------------------------------
 
 static bool quit_requested = false;
+
+// Forward decl — defined later, used by both cmd_mem and cmd_vmr.
+static void print_hex_ascii_line(uint32_t addr, int addr_width, const uint8_t *bytes, int line);
 
 // ---------------------------------------------------------------------------
 // Command implementations.
@@ -276,13 +300,13 @@ static void cmd_vmr(int argc, char **argv) {
 		return;
 	}
 	uint32_t cur = addr;
+	uint8_t  bytes[16];
 	while (count > 0) {
 		int line = count > 16 ? 16 : (int)count;
-		printf("%05x:", cur);
 		for (int i = 0; i < line; i++) {
-			printf(" %02x", dbg_read_vram((cur + i) & 0x1ffff));
+			bytes[i] = dbg_read_vram((cur + i) & 0x1ffff);
 		}
-		printf("\n");
+		print_hex_ascii_line(cur, 5, bytes, line);
 		cur = (cur + line) & 0x1ffff;
 		count -= line;
 	}
@@ -366,6 +390,68 @@ static void cmd_clk(int argc, char **argv) {
 	rdy();
 }
 
+static void cmd_find(int argc, char **argv) {
+	if (argc < 4) {
+		err_msg("usage: find <bank> <start> <len> <byte>... (pattern <= 16 bytes)");
+		return;
+	}
+	uint32_t bank, start, len;
+	if (!parse_hex(argv[0], &bank,  0xff)
+	    || !parse_hex(argv[1], &start, 0xffff)
+	    || !parse_hex(argv[2], &len,  0xffff)) {
+		err_msg("usage: find <bank> <start> <len> <byte>...");
+		return;
+	}
+	int pat_len = argc - 3;
+	if (pat_len > 16) { err_msg("pattern too long (max 16 bytes)"); return; }
+	uint8_t pattern[16];
+	for (int i = 0; i < pat_len; i++) {
+		uint32_t b;
+		if (!parse_hex(argv[3 + i], &b, 0xff)) { err_msg("bad pattern byte"); return; }
+		pattern[i] = (uint8_t)b;
+	}
+	for (uint32_t off = 0; (int32_t)(len - off) >= pat_len; off++) {
+		bool match = true;
+		for (int i = 0; i < pat_len; i++) {
+			if (dbg_read_mem((uint8_t)bank, (uint16_t)(start + off + i), -1) != pattern[i]) {
+				match = false;
+				break;
+			}
+		}
+		if (match) {
+			printf("%04x\n", (uint16_t)(start + off));
+		}
+	}
+	rdy();
+}
+
+// Defined in main.c. cmd_bail bumps this and the main loop returns it.
+extern int exit_code;
+
+static void cmd_bail(int argc, char **argv) {
+	(void)argv;
+	if (argc != 0) { err_msg("bail takes no args"); return; }
+	exit_code      = 1;
+	quit_requested = true;
+	rdy();
+}
+
+// Print one hex-dump line: "<addr>: hh hh ... hh  ASCII...". `addr_width` is
+// 4 (CPU bus) or 5 (VRAM). The ASCII column shows printable ASCII (0x20-0x7e)
+// verbatim and substitutes '.' for anything else. Pads the hex column so the
+// ASCII column aligns even for short final lines.
+static void print_hex_ascii_line(uint32_t addr, int addr_width, const uint8_t *bytes, int line) {
+	printf("%0*x:", addr_width, addr);
+	for (int i = 0; i < line; i++) printf(" %02x", bytes[i]);
+	for (int i = line; i < 16; i++) printf("   ");
+	printf("  ");
+	for (int i = 0; i < line; i++) {
+		uint8_t b = bytes[i];
+		putchar((b >= 0x20 && b <= 0x7e) ? (char)b : '.');
+	}
+	printf("\n");
+}
+
 static void cmd_mem(int argc, char **argv) {
 	uint32_t bank, addr, count;
 	if (argc != 3
@@ -376,13 +462,13 @@ static void cmd_mem(int argc, char **argv) {
 		return;
 	}
 	uint16_t cur = (uint16_t)addr;
+	uint8_t  bytes[16];
 	while (count > 0) {
 		int line = count > 16 ? 16 : (int)count;
-		printf("%04x:", cur);
 		for (int i = 0; i < line; i++) {
-			printf(" %02x", dbg_read_mem((uint8_t)bank, (uint16_t)(cur + i), -1));
+			bytes[i] = dbg_read_mem((uint8_t)bank, (uint16_t)(cur + i), -1);
 		}
-		printf("\n");
+		print_hex_ascii_line(cur, 4, bytes, line);
 		cur   += line;
 		count -= line;
 	}
@@ -443,6 +529,46 @@ static void cmd_qit(int argc, char **argv) {
 	rdy();
 }
 
+static void cmd_hlp(int argc, char **argv) {
+	(void)argv;
+	if (argc != 0) { err_msg("hlp takes no args"); return; }
+	// One line per command. The protocol's RDY terminator follows.
+	puts("execution control:");
+	puts("  brk                                 force-break into the debugger");
+	puts("  cnt | c                             continue (resume CPU)");
+	puts("  stp | s                             single step one instruction");
+	puts("  sov | n                             step over JSR/JSL/JML (else single-step)");
+	puts("  rst                                 reset CPU (not the whole machine)");
+	puts("breakpoints (single BP):");
+	puts("  sbp <bank> <addr>                   set user breakpoint");
+	puts("  cbp <bank> <addr>                   clear user breakpoint");
+	puts("  lbp                                 list breakpoints");
+	puts("registers:");
+	puts("  reg | r                             dump CPU registers");
+	puts("  srg <name> <hex>                    set register (pc/a/b/c/x/y/sp/p/k/db/dp/e)");
+	puts("memory (CPU bus):");
+	puts("  mem | m <bank> <addr> <count>       read memory (count <= 0x1000)");
+	puts("  wmm <bank> <addr> <hex>...          write memory bytes");
+	puts("  fil <bank> <addr> <val> [<count>]   fill memory (count default 1)");
+	puts("  find <bank> <start> <len> <byte>... find byte pattern in range");
+	puts("VRAM:");
+	puts("  vmr <addr> <count>                  read VRAM (count <= 0x1000)");
+	puts("  vmw <addr> <hex>...                 write VRAM bytes");
+	puts("inspection:");
+	puts("  dis | d <bank> <addr> <count>       disassemble N instructions");
+	puts("  stk [<count>]                       stack top (default 16, max 0x40)");
+	puts("  zpr                                 direct-page R0..R15 register pairs");
+	puts("  vrg                                 VERA state snapshot");
+	puts("  clk                                 clocks since last resume");
+	puts("session:");
+	puts("  mod                                 current mode + PC");
+	puts("  ver                                 protocol version");
+	puts("  hlp                                 this help (aliases: h, ?, help)");
+	puts("  quit                                detach, exit 0  (alias: qit)");
+	puts("  bail                                detach, exit 1  (for harness assertions)");
+	rdy();
+}
+
 // ---------------------------------------------------------------------------
 // Command dispatch table.
 // ---------------------------------------------------------------------------
@@ -453,38 +579,45 @@ static const struct {
 	const char *name;
 	cmd_fn      fn;
 } commands[] = {
-	// execution control
-	{"brk", cmd_brk},
-	{"cnt", cmd_cnt},
-	{"stp", cmd_stp},
-	{"sov", cmd_sov},
-	{"rst", cmd_rst},
+	// execution control (single-letter aliases for the common case)
+	{"brk",  cmd_brk},
+	{"cnt",  cmd_cnt},   {"c", cmd_cnt},
+	{"stp",  cmd_stp},   {"s", cmd_stp},
+	{"sov",  cmd_sov},   {"n", cmd_sov},   // n = "next"
+	{"rst",  cmd_rst},
 	// breakpoints
-	{"sbp", cmd_sbp},
-	{"cbp", cmd_cbp},
-	{"lbp", cmd_lbp},
+	{"sbp",  cmd_sbp},
+	{"cbp",  cmd_cbp},
+	{"lbp",  cmd_lbp},
 	// registers
-	{"reg", cmd_reg},
-	{"srg", cmd_srg},
+	{"reg",  cmd_reg},   {"r", cmd_reg},
+	{"srg",  cmd_srg},
 	// memory (RAM)
-	{"mem", cmd_mem},
-	{"wmm", cmd_wmm},
-	{"fil", cmd_fil},
+	{"mem",  cmd_mem},   {"m", cmd_mem},
+	{"wmm",  cmd_wmm},
+	{"fil",  cmd_fil},
+	{"find", cmd_find},
 	// memory (VRAM)
-	{"vmr", cmd_vmr},
-	{"vmw", cmd_vmw},
+	{"vmr",  cmd_vmr},
+	{"vmw",  cmd_vmw},
 	// disassembly
-	{"dis", cmd_dis},
+	{"dis",  cmd_dis},   {"d", cmd_dis},
 	// snapshot panels (parity with SDL)
-	{"stk", cmd_stk},
-	{"zpr", cmd_zpr},
-	{"vrg", cmd_vrg},
-	{"clk", cmd_clk},
+	{"stk",  cmd_stk},
+	{"zpr",  cmd_zpr},
+	{"vrg",  cmd_vrg},
+	{"clk",  cmd_clk},
 	// session
-	{"mod", cmd_mod},
-	{"ver", cmd_ver},
-	{"qit", cmd_qit},
-	{NULL,  NULL},
+	{"mod",  cmd_mod},
+	{"ver",  cmd_ver},
+	{"h",    cmd_hlp},   // help aliases
+	{"hlp",  cmd_hlp},
+	{"?",    cmd_hlp},
+	{"help", cmd_hlp},
+	{"qit",  cmd_qit},   // quit aliases
+	{"quit", cmd_qit},
+	{"bail", cmd_bail},
+	{NULL,   NULL},
 };
 
 static void dispatch_line(char *line) {
@@ -578,6 +711,7 @@ static bool extract_line(char *out, size_t outsz) {
 static int stdio_tick(void) {
 	// 1. Advance state machine (BP / step-complete detection fires callbacks).
 	dbg_tick();
+	bool produced_output = (event_count > 0);
 	flush_events();
 
 	// 2. Drain stdin (sets stdin_eof on EOF) and dispatch AT MOST ONE
@@ -591,7 +725,9 @@ static int stdio_tick(void) {
 	char line[4096];
 	if (extract_line(line, sizeof(line))) {
 		dispatch_line(line);
+		if (event_count > 0) produced_output = true;
 		flush_events();
+		produced_output = true; // a command response is always output
 	} else if (stdin_eof) {
 		// No more complete lines. If there's a trailing partial line
 		// (writer closed without a final \n), process it now then exit;
@@ -607,7 +743,17 @@ static int stdio_tick(void) {
 
 	if (quit_requested) return -1;
 
-	// 3. If stopped AND no buffered input AND not at EOF, block briefly on
+	// 3. Emit a "> " prompt only when the emulator is genuinely ready for
+	// the next input: RUN (more commands welcome -- e.g. brk while running)
+	// or STOP (a command finished and any state-transition events flushed).
+	// Hold the prompt during STEP -- the prompt should follow the upcoming
+	// step-completion event, so a host doing `cmd("stp")` reads `RDY` +
+	// `* BRK STEP …` + `> ` in one batch.
+	if (produced_output && dbg_get_mode() != DMODE_STEP) {
+		emit_prompt();
+	}
+
+	// 4. If stopped AND no buffered input AND not at EOF, block briefly on
 	// stdin so we don't busy-spin. With buffered input or at EOF, the next
 	// tick processes / exits without waiting.
 	if (dbg_get_mode() == DMODE_STOP) {
@@ -636,6 +782,8 @@ void debugger_stdio_init(void) {
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	make_stdin_nonblocking();
 	dbg_register_frontend(&stdio_frontend);
+	emit_banner();
+	emit_prompt();  // initial prompt; subsequent prompts emitted by stdio_tick
 }
 
 void debugger_stdio_shutdown(void) {

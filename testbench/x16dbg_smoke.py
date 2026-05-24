@@ -22,6 +22,8 @@ import subprocess
 import sys
 import time
 
+PROMPT = b"x16db > "
+
 
 def find_emulator():
 	p = os.environ.get("X16EMU_PATH")
@@ -62,6 +64,13 @@ class X16dbg:
 			env=env,
 			bufsize=0,
 		)
+		# The emulator emits a banner on stdout then a "> " prompt. Read
+		# everything up through that initial prompt -- it's our handshake.
+		self._await_prompt()
+
+	def _await_prompt(self, timeout=2.0):
+		"""Read banner + initial prompt and discard."""
+		self._read_until_prompt_bytes(timeout)
 
 	def __enter__(self):
 		return self
@@ -72,7 +81,7 @@ class X16dbg:
 	def close(self):
 		if self.proc.poll() is None:
 			try:
-				self.proc.stdin.write(b"qit\n")
+				self.proc.stdin.write(b"quit\n")
 				self.proc.stdin.flush()
 			except OSError:
 				pass
@@ -82,50 +91,77 @@ class X16dbg:
 			self.proc.kill()
 			self.proc.wait()
 
-	def _readline(self, timeout):
-		ready, _, _ = select.select([self.proc.stdout], [], [], timeout)
-		if not ready:
-			raise TimeoutError("timed out reading stdout")
-		return self.proc.stdout.readline().decode("ascii").rstrip("\r\n")
+	def _read_until_prompt_bytes(self, timeout=2.0):
+		"""Read stdout bytes until they end with PROMPT.
+
+		The prompt has no trailing newline so we can't use readline. Read
+		chunks until the buffer ends with the marker, then return the
+		body (everything before the prompt) as a decoded string.
+		"""
+		buf = b""
+		deadline = time.time() + timeout
+		while not buf.endswith(PROMPT):
+			remaining = deadline - time.time()
+			if remaining <= 0:
+				raise TimeoutError(f"no prompt; buf={buf!r}")
+			ready, _, _ = select.select(
+				[self.proc.stdout], [], [], min(0.05, remaining)
+			)
+			if not ready:
+				continue
+			chunk = os.read(self.proc.stdout.fileno(), 4096)
+			if not chunk:
+				raise EOFError(f"emulator EOF before prompt; buf={buf!r}")
+			buf += chunk
+		return buf[: -len(PROMPT)].decode("ascii", errors="replace")
 
 	def send(self, line):
 		self.proc.stdin.write((line + "\n").encode("ascii"))
 		self.proc.stdin.flush()
 
-	def cmd(self, line, timeout=2.0):
-		"""Send a command. Returns (data_lines, events_during_response).
-
-		Raises AssertionError on ERR, TimeoutError if no RDY/ERR within `timeout`.
-		"""
-		self.send(line)
-		data = []
-		events = []
-		deadline = time.time() + timeout
-		while True:
-			remaining = deadline - time.time()
-			if remaining <= 0:
-				raise TimeoutError(f"no RDY/ERR for {line!r}, got data={data}")
-			ln = self._readline(remaining)
+	def _parse_response(self, body):
+		"""Split a prompt-terminated body into (data, events, response)."""
+		data, events, response = [], [], None
+		for ln in body.split("\n"):
+			ln = ln.rstrip("\r")
+			if ln == "":
+				continue
 			if ln == "RDY":
-				return data, events
-			if ln.startswith("ERR"):
-				raise AssertionError(f"{line!r}: {ln}")
-			if ln.startswith("* "):
+				response = "RDY"
+			elif ln.startswith("ERR"):
+				response = ln
+			elif ln.startswith("* "):
 				events.append(ln)
 			else:
 				data.append(ln)
+		return data, events, response
 
-	def wait_event(self, timeout=2.0):
-		"""Read until a `* …` line arrives."""
-		deadline = time.time() + timeout
-		while True:
-			remaining = deadline - time.time()
-			if remaining <= 0:
-				raise TimeoutError("no event arrived")
-			ln = self._readline(remaining)
-			if ln.startswith("* "):
-				return ln
-			# Discard non-event lines (shouldn't normally appear here).
+	def cmd(self, line, timeout=2.0):
+		"""Send a command and read until the next prompt.
+
+		Returns (data_lines, events). Raises AssertionError on ERR, or
+		TimeoutError if no prompt within `timeout`.
+		"""
+		self.send(line)
+		body = self._read_until_prompt_bytes(timeout)
+		data, events, response = self._parse_response(body)
+		if response is None:
+			raise AssertionError(
+				f"{line!r}: prompt without RDY/ERR; data={data} events={events}"
+			)
+		if response.startswith("ERR"):
+			raise AssertionError(f"{line!r}: {response}")
+		return data, events
+
+	def wait_prompt(self, timeout=2.0):
+		"""Wait for the next prompt without sending anything.
+
+		Useful after `cnt` to passively observe async events (e.g. a BP
+		hit during free running). Returns (data, events).
+		"""
+		body = self._read_until_prompt_bytes(timeout)
+		data, events, _ = self._parse_response(body)
+		return data, events
 
 
 passed = 0
@@ -139,7 +175,8 @@ def check(label, cond, detail=""):
 		print(f"  OK   {label}")
 	else:
 		failed += 1
-		print(f"  FAIL {label}{(': ' + detail) if detail else ''}")
+		suffix = (": " + str(detail)) if detail else ""
+		print(f"  FAIL {label}{suffix}")
 
 
 def main():
@@ -159,9 +196,12 @@ def main():
 		)
 
 		# Force a break so we have a known mode for the rest of the script.
-		d.cmd("brk")
-		ev = d.wait_event(timeout=2)
-		check("brk triggers * BRK USER", ev.startswith("* BRK USER "), ev)
+		_, events = d.cmd("brk")
+		check(
+			"brk triggers * BRK USER",
+			any(e.startswith("* BRK USER ") for e in events),
+			events,
+		)
 
 		data, _ = d.cmd("mod")
 		check("mod returns mode=stop", any("mode=stop" in l for l in data), data)
@@ -183,18 +223,34 @@ def main():
 		print("--- memory (RAM) ---")
 		data, _ = d.cmd("mem 00 0400 10")
 		check(
-			"mem 16 bytes -> one formatted line",
-			len(data) == 1 and re.match(r"^0400:( [0-9a-f]{2}){16}$", data[0]),
+			"mem 16 bytes -> one hex+ASCII line",
+			len(data) == 1
+			and re.match(r"^0400:(?: [0-9a-f]{2}){16}  .{16}$", data[0]),
 			data,
 		)
 
 		d.cmd("wmm 00 0400 de ad be ef")
 		data, _ = d.cmd("mem 00 0400 04")
-		check("wmm round-trip", data == ["0400: de ad be ef"], data)
+		check("wmm round-trip (hex column)", data[0].startswith("0400: de ad be ef"), data)
 
 		d.cmd("fil 00 0500 5a 8")
 		data, _ = d.cmd("mem 00 0500 08")
-		check("fil fills 8 bytes", data == ["0500: 5a 5a 5a 5a 5a 5a 5a 5a"], data)
+		check(
+			"fil fills 8 bytes (hex column)",
+			data[0].startswith("0500: 5a 5a 5a 5a 5a 5a 5a 5a"),
+			data,
+		)
+
+		d.cmd("wmm 00 0600 ca fe ba be")
+		data, _ = d.cmd("find 00 0000 1000 ca fe")
+		check(
+			"find locates the pattern",
+			"0600" in data,
+			data,
+		)
+
+		data, _ = d.cmd("find 00 0000 1000 ff ff ff ff ff ff ff ff")
+		check("find returns no rows when not found", data == [], data)
 
 		print()
 		print("--- VRAM ---")
@@ -258,27 +314,77 @@ def main():
 
 		print()
 		print("--- execution control ---")
-		d.cmd("cnt")
-		ev = d.wait_event(timeout=2)
-		check("cnt emits * RES", ev == "* RES", ev)
+		_, events = d.cmd("cnt")
+		check("cnt emits * RES", events == ["* RES"], events)
 
 		time.sleep(0.05)  # let CPU execute a bit
-		d.cmd("brk")
-		ev = d.wait_event(timeout=2)
-		check("brk after cnt emits * BRK USER", ev.startswith("* BRK USER "), ev)
+		_, events = d.cmd("brk")
+		check(
+			"brk after cnt emits * BRK USER",
+			any(e.startswith("* BRK USER ") for e in events),
+			events,
+		)
 
-		_, _ = d.cmd("stp")
-		ev = d.wait_event(timeout=2)
-		check("stp emits * BRK STEP", ev.startswith("* BRK STEP "), ev)
+		_, events = d.cmd("stp")
+		check(
+			"stp emits * BRK STEP",
+			any(e.startswith("* BRK STEP ") for e in events),
+			events,
+		)
 
-		_, _ = d.cmd("sov")
-		ev = d.wait_event(timeout=2)
-		check("sov emits * BRK STEP", ev.startswith("* BRK STEP "), ev)
+		_, events = d.cmd("sov")
+		if events == ["* RES"]:
+			# sov-on-JSR: the called routine is now running, step-BP set at
+			# the return address. Wait for the eventual step-complete event.
+			_, extra = d.wait_prompt(timeout=2.0)
+			check(
+				"sov-JSR completes via async * BRK STEP",
+				any(e.startswith("* BRK STEP ") for e in extra),
+				extra,
+			)
+		else:
+			# sov on a non-call instruction: behaves like stp.
+			check(
+				"sov non-JSR emits * BRK STEP",
+				any(e.startswith("* BRK STEP ") for e in events),
+				events,
+			)
+
+		# Single-letter aliases mirror the canonical 3-letter names.
+		_, events = d.cmd("s")          # `s` aliases `stp`
+		check(
+			"alias 's' steps like 'stp'",
+			any(e.startswith("* BRK STEP ") for e in events),
+			events,
+		)
+		_, events = d.cmd("c")          # `c` aliases `cnt`
+		check("alias 'c' continues like 'cnt'", events == ["* RES"], events)
+		time.sleep(0.02)
+		_, events = d.cmd("brk")
+		check("brk after c", any(e.startswith("* BRK USER ") for e in events), events)
+		data, _ = d.cmd("r")            # `r` aliases `reg`
+		check("alias 'r' dumps registers", "mode=" in data[0], data)
 
 		d.cmd("rst")
 		# rst by itself doesn't change mode; we should still be in STOP.
 		data, _ = d.cmd("mod")
 		check("after rst, still in STOP", any("mode=stop" in l for l in data), data)
+
+	# bail exit code test runs in a separate process — the X16dbg context
+	# manager always quits cleanly, so we can't trigger bail from within it.
+	print()
+	print("--- bail exit code ---")
+	env = os.environ.copy()
+	env["SDL_VIDEODRIVER"] = "dummy"
+	env["SDL_AUDIODRIVER"] = "dummy"
+	bail_result = subprocess.run(
+		[emu, "-rom", rom, "-debugstdio", "-warp"],
+		input=b"brk\nbail\n",
+		env=env,
+		capture_output=True,
+		timeout=3,
+	)
+	check("bail exits with code 1", bail_result.returncode == 1, bail_result.returncode)
 
 	print()
 	print(f"{passed} passed, {failed} failed")
