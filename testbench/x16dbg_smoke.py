@@ -23,6 +23,7 @@ import sys
 import time
 
 PROMPT = b"x16db > "
+HEADER_RE = re.compile(r"^[1-4]: \[")
 
 
 def find_emulator():
@@ -64,6 +65,7 @@ class X16dbg:
 			env=env,
 			bufsize=0,
 		)
+		self.last_header = []
 		# The emulator emits a banner on stdout then a "> " prompt. Read
 		# everything up through that initial prompt -- it's our handshake.
 		self._await_prompt()
@@ -120,8 +122,13 @@ class X16dbg:
 		self.proc.stdin.flush()
 
 	def _parse_response(self, body):
-		"""Split a prompt-terminated body into (data, events, response)."""
-		data, events, response = [], [], None
+		"""Split a prompt-terminated body into (data, events, header, response).
+
+		Header lines (`^[1-4]: \\[…\\]`) are separated from data lines so
+		assertions on command output don't trip on the header that
+		precedes every prompt.
+		"""
+		data, events, header, response = [], [], [], None
 		for ln in body.split("\n"):
 			ln = ln.rstrip("\r")
 			if ln == "":
@@ -132,19 +139,23 @@ class X16dbg:
 				response = ln
 			elif ln.startswith("* "):
 				events.append(ln)
+			elif HEADER_RE.match(ln):
+				header.append(ln)
 			else:
 				data.append(ln)
-		return data, events, response
+		return data, events, header, response
 
 	def cmd(self, line, timeout=2.0):
 		"""Send a command and read until the next prompt.
 
-		Returns (data_lines, events). Raises AssertionError on ERR, or
-		TimeoutError if no prompt within `timeout`.
+		Returns (data_lines, events). Header lines are silently absorbed
+		(self.last_header keeps the most recent set for header-specific
+		tests). Raises AssertionError on ERR.
 		"""
 		self.send(line)
 		body = self._read_until_prompt_bytes(timeout)
-		data, events, response = self._parse_response(body)
+		data, events, header, response = self._parse_response(body)
+		self.last_header = header
 		if response is None:
 			raise AssertionError(
 				f"{line!r}: prompt without RDY/ERR; data={data} events={events}"
@@ -160,7 +171,8 @@ class X16dbg:
 		hit during free running). Returns (data, events).
 		"""
 		body = self._read_until_prompt_bytes(timeout)
-		data, events, _ = self._parse_response(body)
+		data, events, header, _ = self._parse_response(body)
+		self.last_header = header
 		return data, events
 
 
@@ -372,6 +384,70 @@ def main():
 		# rst by itself doesn't change mode; we should still be in STOP.
 		data, _ = d.cmd("mod")
 		check("after rst, still in STOP", any("mode=stop" in l for l in data), data)
+
+		print()
+		print("--- SDL-equivalent stateful commands ---")
+		# `m a300` sets the data cursor; bare `m` re-dumps from it.
+		data, _ = d.cmd("m a300")
+		check("m <addr> dumps 16 rows", len(data) == 16, len(data))
+		check("m <addr> first row is at addr", data[0].startswith("a300:"), data[0])
+		data, _ = d.cmd("m")
+		check("bare m re-dumps at cursor", data[0].startswith("a300:"), data[0])
+		# `m <bank>:<addr>` sets x16bank too.
+		d.cmd("m 5:a000")
+		data, _ = d.cmd("st")
+		check("m <bank>:<addr> sets view_bank", any("view_bank 5" in l for l in data), data)
+		# `d <addr>` sets disasm cursor; `home` resyncs to regs.pc.
+		d.cmd("d 1000")
+		data, _ = d.cmd("st")
+		check("d <addr> sets view_pc", any("view_pc   00:1000" in l for l in data), data)
+		d.cmd("home")
+		data, _ = d.cmd("st")
+		check("home resyncs view_pc to regs.pc", not any("view_pc   00:1000" in l for l in data), data)
+		# `tb` toggles BP at view_pc; verify with lbp.
+		d.cmd("tb")
+		data, _ = d.cmd("lbp")
+		check("tb sets BP at view_pc", len(data) == 1, data)
+		d.cmd("tb")
+		data, _ = d.cmd("lbp")
+		check("tb clears BP when set", data == [], data)
+
+		print()
+		print("--- header + hdr/st ---")
+		# By default the header emits 3 lines (cpu/aux/view) plus a 4th (bp)
+		# only when one is set. The parser absorbs them into d.last_header.
+		d.cmd("mod")
+		check("header default emits cpu/aux/view (3 lines)",
+		      len(d.last_header) == 3, d.last_header)
+		check("line 1 prefix cpu", d.last_header[0].startswith("1: ["), d.last_header[0])
+		check("line 2 prefix aux", d.last_header[1].startswith("2: ["), d.last_header[1])
+		check("line 3 prefix view", d.last_header[2].startswith("3: ["), d.last_header[2])
+		# Set a BP -> 4th line appears.
+		d.cmd("sbp 00 abcd")
+		d.cmd("mod")
+		check("line 4 emits when BP set",
+		      len(d.last_header) == 4 and d.last_header[3].startswith("4: [ bp="),
+		      d.last_header)
+		d.cmd("cbp 00 abcd")
+		# hdr off suppresses all lines.
+		d.cmd("hdr off")
+		d.cmd("mod")
+		check("hdr off suppresses header", d.last_header == [], d.last_header)
+		# hdr cpu on enables only line 1.
+		d.cmd("hdr cpu on")
+		d.cmd("mod")
+		check("hdr cpu on enables line 1 only",
+		      len(d.last_header) == 1 and d.last_header[0].startswith("1: ["),
+		      d.last_header)
+		# Restore default.
+		d.cmd("hdr on")
+		# st returns a multi-line snapshot.
+		data, _ = d.cmd("st")
+		check("st returns mode/view/regs/clk/bp", any("mode" in l for l in data)
+		                                       and any("view_pc" in l for l in data)
+		                                       and any("clk" in l for l in data)
+		                                       and any("bp" in l for l in data),
+		      data)
 
 	# bail exit code test runs in a separate process — the X16dbg context
 	# manager always quits cleanly, so we can't trigger bail from within it.

@@ -130,11 +130,95 @@ static void emit_banner(void) {
 	fflush(stdout);
 }
 
-// Per-input prompt. Always the same string, no trailing newline, in both
-// TTY and pipe modes: a host harness syncs on the byte-pattern "x16db > "
-// (read-until-suffix-match), and a terminal user sees a classic shell-
-// style prompt that they type their next command right after.
+// Header state. Four bracketed lines emitted before each prompt, each
+// gated by its own flag (default all on). See `hdr` command.
+static bool hdr_cpu_on  = true;   // line 1: instruction + CPU regs/flags
+static bool hdr_aux_on  = true;   // line 2: clk + stack top
+static bool hdr_view_on = true;   // line 3: view cursor
+static bool hdr_bp_on   = true;   // line 4: breakpoint (only when set)
+
+// 8 status bits, MSB first, as '0'/'1'.
+static void format_flag_bits(char out[9], uint8_t status) {
+	for (int i = 0; i < 8; i++) {
+		out[i] = (status & (1u << (7 - i))) ? '1' : '0';
+	}
+	out[8] = '\0';
+}
+
+static void emit_header_cpu(void) {
+	dbg_disasm_line_t ln;
+	dbg_disasm_line(regs.k, regs.pc, &ln);
+	// Bytes column: up to 3 bytes printed as "XX XX XX" (8 chars + trailing
+	// space pad to 9). Fourth byte (65C816 long forms) is rare; truncate.
+	char bcol[12] = "         "; // 9 spaces + NUL
+	for (int j = 0; j < ln.byte_count && j < 3; j++) {
+		bcol[j * 3]     = "0123456789abcdef"[ln.bytes[j] >> 4];
+		bcol[j * 3 + 1] = "0123456789abcdef"[ln.bytes[j] & 0xF];
+	}
+	bcol[9] = '\0';
+	dbg_regs_snapshot_t r;
+	dbg_get_regs(&r);
+	char flags[9];
+	format_flag_bits(flags, r.status);
+	if (r.is_65c816) {
+		printf("1: [ %02x:%04x %s %-16s ] [ A=%04x X=%04x Y=%04x S=%04x D=%04x DB=%02x NVMXDIZC=%s E=%u ]\n",
+		       regs.k, regs.pc, bcol, ln.text,
+		       r.c, r.x16, r.y16, r.sp, r.dp, r.db, flags, r.e ? 1u : 0u);
+	} else {
+		printf("1: [ %02x:%04x %s %-16s ] [ A=%02x X=%02x Y=%02x S=%04x NV-BDIZC=%s ]\n",
+		       regs.k, regs.pc, bcol, ln.text,
+		       r.a, r.xl, r.yl, r.sp | 0x100, flags);
+	}
+}
+
+static void emit_header_aux(void) {
+	dbg_stack_entry_t stk[8];
+	dbg_get_stack(stk, 8);
+	printf("2: [ clk=%u stk=%04x:", dbg_clocks_since_resume(), stk[0].addr);
+	for (int i = 0; i < 8; i++) {
+		printf("%s%02x", i == 0 ? "" : " ", stk[i].value);
+	}
+	printf(" ]\n");
+}
+
+static void emit_header_view(void) {
+	uint8_t  pc_bank;
+	uint16_t pc;
+	dbg_get_view_pc(&pc_bank, &pc, NULL);
+	uint32_t data  = dbg_get_view_data();
+	int      vbank = dbg_get_view_x16bank();
+	int      mode  = dbg_get_view_mode();
+	char vbuf[8];
+	if (vbank < 0) strcpy(vbuf, "-");
+	else           snprintf(vbuf, sizeof(vbuf), "%02x", vbank);
+	printf("3: [ view: pc=%02x:%04x d=%02x:%04x b=%s %s ]\n",
+	       pc_bank, pc,
+	       (uint8_t)(data >> 16), (uint16_t)(data & 0xFFFF),
+	       vbuf,
+	       mode == DBG_VIEW_RAM ? "RAM" : "VRAM");
+}
+
+static void emit_header_bp(struct breakpoint bp) {
+	printf("4: [ bp=%02x:%04x ]\n", bp.bank, (uint16_t)bp.pc);
+}
+
+static void emit_header(void) {
+	if (hdr_cpu_on)  emit_header_cpu();
+	if (hdr_aux_on)  emit_header_aux();
+	if (hdr_view_on) emit_header_view();
+	if (hdr_bp_on) {
+		struct breakpoint bp = dbg_get_breakpoint();
+		if (bp.pc >= 0) emit_header_bp(bp);
+	}
+}
+
+// Per-input prompt. The header (1–4 bracketed lines) precedes it. The
+// prompt itself has no trailing newline so a host harness can sync on
+// the byte pattern "x16db > " (read-until-suffix-match); a terminal
+// user sees a classic shell-style prompt they type their next command
+// right after.
 static void emit_prompt(void) {
+	emit_header();
 	fputs("x16db > ", stdout);
 	fflush(stdout);
 }
@@ -757,6 +841,75 @@ static void cmd_tb(int argc, char **argv) {
 	rdy();
 }
 
+static bool *hdr_flag_for_name(const char *name) {
+	if (!strcmp(name, "cpu")  || !strcmp(name, "1")) return &hdr_cpu_on;
+	if (!strcmp(name, "aux")  || !strcmp(name, "2")) return &hdr_aux_on;
+	if (!strcmp(name, "view") || !strcmp(name, "3")) return &hdr_view_on;
+	if (!strcmp(name, "bp")   || !strcmp(name, "4")) return &hdr_bp_on;
+	return NULL;
+}
+
+static void cmd_hdr(int argc, char **argv) {
+	if (argc == 0) {
+		// Status report. Each line is a copy-paste-valid setter command,
+		// so the user can re-apply state by piping the output back in.
+		printf("hdr cpu  %s\n", hdr_cpu_on  ? "on" : "off");
+		printf("hdr aux  %s\n", hdr_aux_on  ? "on" : "off");
+		printf("hdr view %s\n", hdr_view_on ? "on" : "off");
+		printf("hdr bp   %s\n", hdr_bp_on   ? "on" : "off");
+		rdy();
+		return;
+	}
+	if (argc == 1) {
+		bool on;
+		if      (!strcmp(argv[0], "on"))  on = true;
+		else if (!strcmp(argv[0], "off")) on = false;
+		else { err_msg("usage: hdr [on|off | <name>|<num> on|off]"); return; }
+		hdr_cpu_on = hdr_aux_on = hdr_view_on = hdr_bp_on = on;
+		rdy();
+		return;
+	}
+	if (argc == 2) {
+		bool *flag = hdr_flag_for_name(argv[0]);
+		if (!flag) { err_msg("unknown header (use cpu|aux|view|bp or 1-4)"); return; }
+		if      (!strcmp(argv[1], "on"))  *flag = true;
+		else if (!strcmp(argv[1], "off")) *flag = false;
+		else { err_msg("usage: hdr <name>|<num> on|off"); return; }
+		rdy();
+		return;
+	}
+	err_msg("usage: hdr [on|off | <name>|<num> on|off]");
+}
+
+static void cmd_st(int argc, char **argv) {
+	(void)argv;
+	if (argc != 0) { err_msg("st takes no args"); return; }
+	int mode = dbg_get_mode();
+	const char *modestr = mode == DMODE_RUN  ? "run"
+	                    : mode == DMODE_STEP ? "step"
+	                    :                      "stop";
+	uint8_t  pc_bank;
+	uint16_t pc;
+	int      pc_x16bank;
+	dbg_get_view_pc(&pc_bank, &pc, &pc_x16bank);
+	uint32_t data = dbg_get_view_data();
+	int      vbank = dbg_get_view_x16bank();
+	int      vmode = dbg_get_view_mode();
+	dbg_regs_snapshot_t r;
+	dbg_get_regs(&r);
+	printf("mode      %s\n", modestr);
+	printf("view_pc   %02x:%04x  x16bank=%d\n", pc_bank, pc, pc_x16bank);
+	printf("view_data %02x:%04x\n", (uint8_t)(data >> 16), (uint16_t)(data & 0xFFFF));
+	printf("view_bank %d\n", vbank);
+	printf("view_mode %s\n", vmode == DBG_VIEW_RAM ? "RAM" : "VRAM");
+	printf("regs.pc   %02x:%04x\n", r.k, r.pc);
+	printf("clk       %u\n", dbg_clocks_since_resume());
+	struct breakpoint bp = dbg_get_breakpoint();
+	if (bp.pc >= 0) printf("bp        %02x:%04x  x16bank=%d\n", bp.bank, (uint16_t)bp.pc, bp.x16Bank);
+	else            printf("bp        (none)\n");
+	rdy();
+}
+
 static void cmd_hlp(int argc, char **argv) {
 	(void)argv;
 	if (argc != 0) { err_msg("hlp takes no args"); return; }
@@ -795,6 +948,12 @@ static void cmd_hlp(int argc, char **argv) {
 	puts("  zpr                                 direct-page R0..R15 register pairs");
 	puts("  vrg                                 VERA state snapshot");
 	puts("  clk                                 clocks since last resume");
+	puts("header / status (header lines emit before each prompt):");
+	puts("  hdr                                 show per-line on/off status");
+	puts("  hdr on | off                        toggle all four header lines");
+	puts("  hdr cpu|aux|view|bp on|off          toggle a specific header line");
+	puts("  hdr 1|2|3|4 on|off                  same, by line number");
+	puts("  st                                  full state dump (mode, view, regs, clk, bp)");
 	puts("session:");
 	puts("  mod                                 current mode + PC");
 	puts("  ver                                 protocol version");
@@ -851,6 +1010,9 @@ static const struct {
 	{"zpr",  cmd_zpr},
 	{"vrg",  cmd_vrg},
 	{"clk",  cmd_clk},
+	// header / status
+	{"hdr",  cmd_hdr},
+	{"st",   cmd_st},
 	// session
 	{"mod",  cmd_mod},
 	{"ver",  cmd_ver},
