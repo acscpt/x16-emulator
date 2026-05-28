@@ -1,0 +1,29 @@
+{
+  // MD013/line-length: an 80-column rule for prose Markdown is a 1970s
+  // punch-card limit cosplaying as best practice. Every renderer that
+  // matters soft-wraps; hard-wrapping just turns every paragraph edit
+  // into line-rewrap diff churn. Project policy is no hard wrap. Off.
+  "MD013": false,
+
+  // MD029/ol-prefix: dogmatic. There are legitimate reasons to start an
+  // ordered list at a non-1 number, such as aligning walk-through bullets
+  // with autonumbered sequence-diagram steps. The rule offers no exception
+  // path for that, so the rule loses. Off.
+  "MD029": false,
+
+  // MD036/no-emphasis-as-heading: assumes the only legitimate use of a
+  // bolded standalone phrase is as a heading. Wrong. Bold paragraph labels
+  // are a perfectly valid way to mark visual sub-groupings inside a list
+  // or section without inflating the heading hierarchy or polluting any
+  // auto-generated TOC. Editorial layout choice masquerading as a
+  // structure rule. Off.
+  "MD036": false,
+
+  // MD033/no-inline-html: tells you to avoid HTML in Markdown. Markdown
+  // was deliberately designed to allow inline HTML for content it cannot
+  // express on its own. Bulleted lists inside table cells are the textbook
+  // case: there is no native Markdown syntax for a real list inside a
+  // table cell, so <ul><li> is the correct answer, not a violation.
+  // Dogmatic about purity at the cost of expressiveness. Off.
+  "MD033": false
+}
