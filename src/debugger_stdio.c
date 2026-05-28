@@ -258,6 +258,21 @@ static bool parse_bank_addr(const char *s, int *out_bank, uint32_t *out_addr, ui
 	return true;
 }
 
+// Parse "+[<hex>]" or "-[<hex>]". With no hex, fills the signed offset with
+// +default_step / -default_step. Returns true on a well-formed nudge token.
+static bool parse_nudge(const char *s, uint32_t default_step, int32_t *out_signed) {
+	if (!s || (*s != '+' && *s != '-')) return false;
+	bool neg = (*s == '-');
+	if (s[1] == '\0') {
+		*out_signed = neg ? -(int32_t)default_step : (int32_t)default_step;
+		return true;
+	}
+	uint32_t off;
+	if (!parse_hex(s + 1, &off, 0xFFFFFF)) return false;
+	*out_signed = neg ? -(int32_t)off : (int32_t)off;
+	return true;
+}
+
 // ---------------------------------------------------------------------------
 // Detach flag (set by `qit`).
 // ---------------------------------------------------------------------------
@@ -705,17 +720,24 @@ static int view_pc_x16bank_for(uint16_t pc, uint8_t bank) {
 }
 
 static void cmd_m(int argc, char **argv) {
-	if (argc > 1) { err_msg("usage: m [<bank>:<addr>]"); return; }
+	if (argc > 1) { err_msg("usage: m [<bank>:<addr> | +[<off>] | -[<off>]]"); return; }
 	if (argc == 1) {
-		int      bank;
-		uint32_t addr;
-		if (!parse_bank_addr(argv[0], &bank, &addr, 0xFFFFFF)) {
-			err_msg("usage: m [<bank>:<addr>]");
-			return;
+		int32_t delta;
+		if (parse_nudge(argv[0], 0x100, &delta)) {
+			uint32_t cur = dbg_get_view_data();
+			dbg_set_view_data(((uint32_t)((int32_t)cur + delta)) & 0xFFFFFF);
+			dbg_set_view_mode(DBG_VIEW_RAM);
+		} else {
+			int      bank;
+			uint32_t addr;
+			if (!parse_bank_addr(argv[0], &bank, &addr, 0xFFFFFF)) {
+				err_msg("usage: m [<bank>:<addr> | +[<off>] | -[<off>]]");
+				return;
+			}
+			if (bank >= 0) dbg_set_view_x16bank(bank);
+			dbg_set_view_data(addr);
+			dbg_set_view_mode(DBG_VIEW_RAM);
 		}
-		if (bank >= 0) dbg_set_view_x16bank(bank);
-		dbg_set_view_data(addr);
-		dbg_set_view_mode(DBG_VIEW_RAM);
 	} else {
 		dbg_set_view_mode(DBG_VIEW_RAM);
 	}
@@ -724,34 +746,51 @@ static void cmd_m(int argc, char **argv) {
 }
 
 static void cmd_d(int argc, char **argv) {
-	if (argc > 1) { err_msg("usage: d [<bank>:<addr>]"); return; }
+	if (argc > 1) { err_msg("usage: d [<bank>:<addr> | +[<off>] | -[<off>]]"); return; }
 	if (argc == 1) {
-		int      bank;
-		uint32_t addr;
-		if (!parse_bank_addr(argv[0], &bank, &addr, 0xFFFF)) {
-			err_msg("usage: d [<bank>:<addr>]");
-			return;
+		int32_t delta;
+		if (parse_nudge(argv[0], 0x10, &delta)) {
+			uint8_t  cur_bank;
+			uint16_t cur_pc;
+			int      cur_x16;
+			dbg_get_view_pc(&cur_bank, &cur_pc, &cur_x16);
+			uint16_t new_pc = (uint16_t)((int32_t)cur_pc + delta);
+			int      x16    = view_pc_x16bank_for(new_pc, cur_bank);
+			dbg_set_view_pc(cur_bank, new_pc, x16);
+		} else {
+			int      bank;
+			uint32_t addr;
+			if (!parse_bank_addr(argv[0], &bank, &addr, 0xFFFF)) {
+				err_msg("usage: d [<bank>:<addr> | +[<off>] | -[<off>]]");
+				return;
+			}
+			uint8_t  cur_bank;
+			dbg_get_view_pc(&cur_bank, NULL, NULL);
+			uint8_t new_bank = (bank >= 0) ? (uint8_t)bank : cur_bank;
+			int x16bank = (bank >= 0 && (uint16_t)addr >= 0xA000) ? bank
+			              : view_pc_x16bank_for((uint16_t)addr, new_bank);
+			dbg_set_view_pc(new_bank, (uint16_t)addr, x16bank);
 		}
-		uint8_t  cur_bank;
-		dbg_get_view_pc(&cur_bank, NULL, NULL);
-		uint8_t new_bank = (bank >= 0) ? (uint8_t)bank : cur_bank;
-		int x16bank = (bank >= 0 && (uint16_t)addr >= 0xA000) ? bank
-		              : view_pc_x16bank_for((uint16_t)addr, new_bank);
-		dbg_set_view_pc(new_bank, (uint16_t)addr, x16bank);
 	}
 	dump_view_disasm(16);
 	rdy();
 }
 
 static void cmd_v(int argc, char **argv) {
-	if (argc > 1) { err_msg("usage: v [<addr>]"); return; }
+	if (argc > 1) { err_msg("usage: v [<addr> | +[<off>] | -[<off>]]"); return; }
 	if (argc == 1) {
-		uint32_t addr;
-		if (!parse_hex(argv[0], &addr, 0x1FFFF)) {
-			err_msg("usage: v [<addr>]  (addr <= 1ffff)");
-			return;
+		int32_t delta;
+		if (parse_nudge(argv[0], 0x200, &delta)) {
+			uint32_t cur = dbg_get_view_data();
+			dbg_set_view_data(((uint32_t)((int32_t)cur + delta)) & 0x1FFFF);
+		} else {
+			uint32_t addr;
+			if (!parse_hex(argv[0], &addr, 0x1FFFF)) {
+				err_msg("usage: v [<addr> | +[<off>] | -[<off>]]  (addr <= 1ffff)");
+				return;
+			}
+			dbg_set_view_data(addr);
 		}
-		dbg_set_view_data(addr);
 	}
 	dbg_set_view_mode(DBG_VIEW_VRAM);
 	dump_view_data_vram();
@@ -759,20 +798,53 @@ static void cmd_v(int argc, char **argv) {
 }
 
 static void cmd_b(int argc, char **argv) {
-	uint32_t bank;
-	if (argc != 2 || !parse_hex(argv[1], &bank, 0xff)) {
-		err_msg("usage: b ram|rom <bank>");
+	if (argc < 1 || argc > 2) {
+		err_msg("usage: b ram|rom|view <bank>  |  b view +|-|follow");
 		return;
 	}
-	if (!strcmp(argv[0], "ram")) {
-		memory_set_ram_bank((uint8_t)bank);
-	} else if (!strcmp(argv[0], "rom")) {
-		memory_set_rom_bank((uint8_t)bank);
-	} else {
-		err_msg("usage: b ram|rom <bank>");
+	if (!strcmp(argv[0], "ram") || !strcmp(argv[0], "rom")) {
+		uint32_t bank;
+		if (argc != 2 || !parse_hex(argv[1], &bank, 0xff)) {
+			err_msg("usage: b ram|rom <bank>");
+			return;
+		}
+		if (!strcmp(argv[0], "ram")) memory_set_ram_bank((uint8_t)bank);
+		else                          memory_set_rom_bank((uint8_t)bank);
+		rdy();
 		return;
 	}
-	rdy();
+	if (!strcmp(argv[0], "view")) {
+		if (argc != 2) {
+			err_msg("usage: b view <bank>|+|-|follow");
+			return;
+		}
+		if (!strcmp(argv[1], "follow")) {
+			dbg_set_view_x16bank(-1);
+			rdy();
+			return;
+		}
+		if (!strcmp(argv[1], "+") || !strcmp(argv[1], "-")) {
+			int cur = dbg_get_view_x16bank();
+			if (cur < 0) {
+				// "follow CPU" -> start from the CPU's currently-selected bank
+				// so the nudge moves one off from where the user actually sees.
+				cur = (int)memory_get_ram_bank();
+			}
+			int step = (argv[1][0] == '+') ? 1 : -1;
+			dbg_set_view_x16bank((cur + step) & 0xff);
+			rdy();
+			return;
+		}
+		uint32_t bank;
+		if (!parse_hex(argv[1], &bank, 0xff)) {
+			err_msg("usage: b view <bank>|+|-|follow");
+			return;
+		}
+		dbg_set_view_x16bank((int)bank);
+		rdy();
+		return;
+	}
+	err_msg("usage: b ram|rom|view ...");
 }
 
 static void cmd_r(int argc, char **argv) {
@@ -921,14 +993,18 @@ static void cmd_hlp(int argc, char **argv) {
 	puts("  sov | n                             step over JSR/JSL/JML (else single-step)");
 	puts("  rst                                 reset CPU (not the whole machine)");
 	puts("SDL-equivalent (operate on the shared view cursor):");
-	puts("  m [<bank>:<addr>]                   data cursor + dump 16 rows RAM");
-	puts("  d [<bank>:<addr>]                   disasm cursor + 16 instructions");
-	puts("  v [<addr>]                          data cursor + dump 16 rows VRAM");
-	puts("  b ram|rom <bank>                    set CPU's RAM/ROM bank register");
-	puts("  r <name> <hex>                      set register (pc/a/b/c/x/y/sp/p/k/db/dp/e)");
-	puts("  f <addr> <val> [<count>] [<incr>]   fill RAM or VRAM (bypasses I/O)");
-	puts("  home                                view_pc := regs.pc; dump disasm");
-	puts("  tb                                  toggle breakpoint at view_pc");
+	puts("  m [<bank>:<addr> | +[<off>] | -[<off>]]  data cursor + dump 16 rows RAM");
+	puts("                                           bare +/- nudges by 0x100");
+	puts("  d [<bank>:<addr> | +[<off>] | -[<off>]]  disasm cursor + 16 instructions");
+	puts("                                           bare +/- nudges by 0x10");
+	puts("  v [<addr> | +[<off>] | -[<off>]]         data cursor + dump 16 rows VRAM");
+	puts("                                           bare +/- nudges by 0x200");
+	puts("  b ram|rom <bank>                         set CPU's RAM/ROM bank register");
+	puts("  b view <bank>|+|-|follow                 view-bank override (or follow CPU)");
+	puts("  r <name> <hex>                           set register (pc/a/b/c/x/y/sp/p/k/db/dp/e)");
+	puts("  f <addr> <val> [<count>] [<incr>]        fill RAM or VRAM (bypasses I/O)");
+	puts("  home                                     view_pc := regs.pc; dump disasm");
+	puts("  tb                                       toggle breakpoint at view_pc");
 	puts("breakpoints (single BP, explicit-args):");
 	puts("  sbp <bank> <addr>                   set user breakpoint");
 	puts("  cbp <bank> <addr>                   clear user breakpoint");
