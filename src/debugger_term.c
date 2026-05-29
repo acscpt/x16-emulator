@@ -2,11 +2,11 @@
 //
 // Terminal handling and line editor for the stdio debugger. See header.
 //
-// Commit 1 (foundation): noncanonical / no-echo termios, own echo of
-// printable chars, own handling of backspace and Enter. Escape sequences
-// (CSI / SS3) are parsed by the state machine but their results are
-// silently consumed -- arrow keys, ctrl shortcuts, etc. land in later
-// commits.
+// When stdin is a tty, the terminal is switched to noncanonical / no-echo
+// and the editor takes over: printable chars are echoed as they arrive,
+// backspace erases the previous char, and Enter completes a line and
+// hands it to the caller via term_take_line. CSI and SS3 escape
+// sequences are parsed and absorbed.
 
 #include "debugger_term.h"
 
@@ -38,9 +38,7 @@ static bool           termios_saved = false;
 // transition into EDIT_ESC and then EDIT_CSI / EDIT_SS3 as the sequence
 // unfolds. CSI sequences end at a "final byte" in the 0x40-0x7E range
 // (letters A-Z / a-z / brackets / tilde, etc); SS3 sequences are one byte
-// after the introducer. Commit 1 silently absorbs every completed escape
-// sequence -- the dispatch to history navigation / cursor movement lands
-// in subsequent commits.
+// after the introducer. Completed sequences are absorbed without dispatch.
 // ---------------------------------------------------------------------------
 
 #define LINE_BUF_SZ 4096
@@ -48,6 +46,26 @@ static bool           termios_saved = false;
 static char   line_buf[LINE_BUF_SZ];
 static size_t line_len   = 0;
 static bool   line_ready = false;
+
+// ---------------------------------------------------------------------------
+// History ring.
+//
+// Up to HISTORY_MAX entries, oldest evicted first. history_nav tracks where
+// the user is currently looking: -1 means "the live line" (line_buf is the
+// user's in-progress edit), 0 means "the most recent entry", and so on up
+// to history_count - 1 (oldest). When the user leaves the live line to
+// walk back into history, the in-progress edit is parked in saved_line so
+// down-arrowing past the most recent entry restores it.
+// ---------------------------------------------------------------------------
+
+#define HISTORY_MAX 32
+
+static char  *history[HISTORY_MAX];
+static int    history_count = 0;
+static int    history_first = 0;
+static int    history_nav   = -1;
+static char   saved_line[LINE_BUF_SZ];
+static size_t saved_len = 0;
 
 typedef enum {
 	EDIT_NORMAL = 0,
@@ -68,6 +86,92 @@ static void write_byte(uint8_t b) {
 }
 
 // ---------------------------------------------------------------------------
+// History helpers.
+// ---------------------------------------------------------------------------
+
+// Visually erase line_buf, then copy `src` (length `n`) in and echo it.
+// Used by history navigation to swap the line under the cursor.
+static void replace_line(const char *src, size_t n) {
+	while (line_len > 0) {
+		write_str("\b \b");
+		line_len--;
+	}
+	if (n >= LINE_BUF_SZ) n = LINE_BUF_SZ - 1;
+	memcpy(line_buf, src, n);
+	line_len = n;
+	if (line_len > 0) {
+		(void)write(STDOUT_FILENO, line_buf, line_len);
+	}
+}
+
+// Ring access. offset 0 is the most recent entry, history_count-1 the
+// oldest. Returns NULL if out of range.
+static const char *history_at(int offset) {
+	if (offset < 0 || offset >= history_count) return NULL;
+	int idx = (history_first + history_count - 1 - offset) % HISTORY_MAX;
+	return history[idx];
+}
+
+// Append a line to the ring. No-op for empty lines; every other Enter is
+// pushed verbatim so repeated commands (stp stp stp ...) appear in history
+// the way they were entered.
+static void history_push(const char *line, size_t n) {
+	if (n == 0) return;
+	int target;
+	if (history_count < HISTORY_MAX) {
+		target = (history_first + history_count) % HISTORY_MAX;
+		history_count++;
+	} else {
+		free(history[history_first]);
+		target        = history_first;
+		history_first = (history_first + 1) % HISTORY_MAX;
+	}
+	char *copy = malloc(n + 1);
+	if (!copy) {
+		// Out of memory: drop this entry, restore the slot. Rare on a
+		// modern desktop, but the bookkeeping has to stay coherent.
+		if (history_count > 0 && target == (history_first + history_count - 1) % HISTORY_MAX) {
+			history_count--;
+		}
+		history[target] = NULL;
+		return;
+	}
+	memcpy(copy, line, n);
+	copy[n] = '\0';
+	history[target] = copy;
+}
+
+// Up arrow: walk further back into history, parking the live line on the
+// first step away from it.
+static void history_up(void) {
+	if (history_count == 0) return;
+	if (history_nav >= history_count - 1) return;
+	if (history_nav == -1) {
+		memcpy(saved_line, line_buf, line_len);
+		saved_len    = line_len;
+		history_nav  = 0;
+	} else {
+		history_nav++;
+	}
+	const char *entry = history_at(history_nav);
+	if (entry) replace_line(entry, strlen(entry));
+}
+
+// Down arrow: walk forward. At the most recent entry, the next press
+// restores the parked live line.
+static void history_down(void) {
+	if (history_nav < 0) return;
+	if (history_nav == 0) {
+		history_nav = -1;
+		replace_line(saved_line, saved_len);
+		return;
+	}
+	history_nav--;
+	const char *entry = history_at(history_nav);
+	if (entry) replace_line(entry, strlen(entry));
+}
+
+// ---------------------------------------------------------------------------
 // Lifecycle.
 // ---------------------------------------------------------------------------
 
@@ -76,6 +180,8 @@ int term_init(void) {
 	line_len    = 0;
 	line_ready  = false;
 	edit_state  = EDIT_NORMAL;
+	history_nav = -1;
+	saved_len   = 0;
 
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
 	if (!isatty(STDIN_FILENO)) {
@@ -133,7 +239,10 @@ static void submit_line(void) {
 		line_buf[LINE_BUF_SZ - 1] = '\0';
 		line_len                  = LINE_BUF_SZ - 1;
 	}
-	line_ready = true;
+	history_push(line_buf, line_len);
+	history_nav = -1;
+	saved_len   = 0;
+	line_ready  = true;
 }
 
 static void backspace(void) {
@@ -189,17 +298,27 @@ bool term_feed_byte(uint8_t b) {
 
 		case EDIT_CSI:
 			// CSI bodies are sequences of 0x30-0x3F (digits, ?, ;, etc)
-			// followed by a final byte in 0x40-0x7E. We don't dispatch
-			// anything yet -- commit 2 wires arrow keys into the history
-			// ring.
+			// followed by a final byte in 0x40-0x7E. A and B are the
+			// up and down arrow keys.
 			if (b >= 0x40 && b <= 0x7E) {
+				if (b == 'A') {
+					history_up();
+				} else if (b == 'B') {
+					history_down();
+				}
 				edit_state = EDIT_NORMAL;
 			}
 			return false;
 
 		case EDIT_SS3:
 			// SS3 sequences are ESC O followed by one byte (often the same
-			// final letters as CSI). Consume the one byte and return.
+			// final letters as CSI). Some terminals send ESC O A / ESC O B
+			// for the arrow keys when the keypad is in application mode.
+			if (b == 'A') {
+				history_up();
+			} else if (b == 'B') {
+				history_down();
+			}
 			edit_state = EDIT_NORMAL;
 			return false;
 	}

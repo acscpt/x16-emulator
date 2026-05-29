@@ -285,8 +285,6 @@ RDY
 
 ## Limitations
 
-A handful of behaviours and gaps are worth knowing about up front.
-
 ### Single breakpoint slot
 
 The debugger core currently exposes one user breakpoint. Both `sbp` and `tb` overwrite any existing breakpoint with the new one: silently in the case of `sbp`, with a single `* BP SET` event in the case of `tb`. 
@@ -302,7 +300,3 @@ Inspection commands such as `reg`, `mem`, `stk`, and `vrg` work while the CPU is
 ### The `STP` opcode wedges the CPU
 
 Executing 6502 `STP` (opcode `$DB`) drops the CPU into the debugger with `* BRK STP <bank> <addr>`. The CPU does not advance past the instruction on its own; subsequent `cnt` or `stp` from that PC will re-execute `STP` and break again. To recover, point the PC elsewhere (`r pc <addr>` followed by `cnt`) or reset the CPU entirely with `rst`.
-
-### No line editing
-
-The shell reads each command as one Enter-terminated line. Arrow-key history, in-line cursor movement, and tab completion are not supported.
