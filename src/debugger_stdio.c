@@ -34,6 +34,7 @@ void debugger_stdio_shutdown(void) {}
 // ===========================================================================
 
 #include "debugger_core.h"
+#include "debugger_term.h"
 #include "memory.h"
 #include "cpu/fake6502.h"
 #include "cpu/registers.h"
@@ -1152,7 +1153,49 @@ static void make_stdin_nonblocking(void) {
 }
 
 // Pull whatever is available right now into line_accum. Returns -1 on EOF.
+//
+// Two paths: in tty mode, read a byte at a time, feed it through the
+// debugger_term line editor (which echoes printable chars, handles
+// backspace and Enter, and absorbs escape sequences), and splice each
+// completed line into line_accum with a trailing '\n' so extract_line
+// picks it up unchanged. In pipe mode, read in bulk straight into
+// line_accum -- the protocol path the testbench and scripts depend on.
 static int drain_stdin(void) {
+	if (term_is_tty()) {
+		while (line_accum_len < LINE_ACCUM_SZ - 1) {
+			uint8_t b;
+			ssize_t n = read(STDIN_FILENO, &b, 1);
+			if (n == 0) {
+				// In noncanonical mode with VMIN=0/VTIME=0, a 0-byte
+				// return means "no data right now", not EOF. A tty in
+				// this mode does not deliver EOF through read() at all
+				// -- a real disconnect would surface via POLLHUP or
+				// SIGHUP, neither of which we treat as input here.
+				return 0;
+			}
+			if (n < 0) {
+				if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
+				stdin_eof = true;
+				return -1;
+			}
+			if (term_feed_byte(b)) {
+				char   tmp[LINE_ACCUM_SZ];
+				size_t len = term_take_line(tmp, sizeof(tmp));
+				if (line_accum_len + len + 1 >= LINE_ACCUM_SZ) {
+					// No room for the completed line + its '\n'; leave it
+					// in tmp lost rather than half-splice. In practice
+					// LINE_ACCUM_SZ is far larger than any plausible
+					// command.
+					continue;
+				}
+				memcpy(line_accum + line_accum_len, tmp, len);
+				line_accum_len += len;
+				line_accum[line_accum_len++] = '\n';
+			}
+		}
+		return 0;
+	}
+
 	while (line_accum_len < LINE_ACCUM_SZ - 1) {
 		ssize_t n = read(STDIN_FILENO,
 		                 line_accum + line_accum_len,
@@ -1263,13 +1306,14 @@ void debugger_stdio_init(void) {
 	// requiring an explicit fflush after every byte.
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	make_stdin_nonblocking();
+	term_init();
 	dbg_register_frontend(&stdio_frontend);
 	emit_banner();
 	emit_prompt();  // initial prompt; subsequent prompts emitted by stdio_tick
 }
 
 void debugger_stdio_shutdown(void) {
-	// no-op for now
+	term_shutdown();
 }
 
 #endif // OS dispatch
