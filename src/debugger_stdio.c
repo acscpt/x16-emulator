@@ -220,7 +220,7 @@ static void emit_header(void) {
 // right after.
 static void emit_prompt(void) {
 	emit_header();
-	fputs("x16db > ", stdout);
+	fputs("\nx16db > ", stdout);
 	fflush(stdout);
 }
 
