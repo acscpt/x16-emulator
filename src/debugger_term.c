@@ -45,6 +45,7 @@ static bool           termios_saved = false;
 
 static char   line_buf[LINE_BUF_SZ];
 static size_t line_len   = 0;
+static size_t cursor_pos = 0;
 static bool   line_ready = false;
 
 // ---------------------------------------------------------------------------
@@ -75,6 +76,7 @@ typedef enum {
 } edit_state_t;
 
 static edit_state_t edit_state = EDIT_NORMAL;
+static char         csi_param  = 0; // first parameter byte of an in-progress CSI
 
 static void write_str(const char *s) {
 	(void)write(STDOUT_FILENO, s, strlen(s));
@@ -85,23 +87,46 @@ static void write_byte(uint8_t b) {
 	(void)write(STDOUT_FILENO, &c, 1);
 }
 
+// Cursor movement helpers. These emit ANSI escape sequences that move the
+// terminal cursor without changing line_buf. cursor_pos tracking is the
+// caller's job.
+static void cursor_back(size_t n) {
+	if (n == 0) return;
+	if (n == 1) { write_str("\b"); return; }
+	char seq[32];
+	snprintf(seq, sizeof(seq), "\x1b[%zuD", n);
+	write_str(seq);
+}
+
+static void cursor_forward(size_t n) {
+	if (n == 0) return;
+	char seq[32];
+	snprintf(seq, sizeof(seq), "\x1b[%zuC", n);
+	write_str(seq);
+}
+
+static void clear_to_eol(void) {
+	write_str("\x1b[K");
+}
+
 // ---------------------------------------------------------------------------
 // History helpers.
 // ---------------------------------------------------------------------------
 
-// Visually erase line_buf, then copy `src` (length `n`) in and echo it.
-// Used by history navigation to swap the line under the cursor.
+// Move the terminal cursor back to position 0 of the current line, copy
+// `src` (length `n`) into line_buf and echo it, then clear any leftover
+// characters that the old (possibly longer) line had on screen. The
+// editor cursor lands at the end of the new line.
 static void replace_line(const char *src, size_t n) {
-	while (line_len > 0) {
-		write_str("\b \b");
-		line_len--;
-	}
+	cursor_back(cursor_pos);
 	if (n >= LINE_BUF_SZ) n = LINE_BUF_SZ - 1;
 	memcpy(line_buf, src, n);
-	line_len = n;
+	line_len   = n;
+	cursor_pos = n;
 	if (line_len > 0) {
 		(void)write(STDOUT_FILENO, line_buf, line_len);
 	}
+	clear_to_eol();
 }
 
 // Ring access. offset 0 is the most recent entry, history_count-1 the
@@ -178,6 +203,7 @@ static void history_down(void) {
 int term_init(void) {
 	is_tty_mode = false;
 	line_len    = 0;
+	cursor_pos  = 0;
 	line_ready  = false;
 	edit_state  = EDIT_NORMAL;
 	history_nav = -1;
@@ -242,20 +268,83 @@ static void submit_line(void) {
 	history_push(line_buf, line_len);
 	history_nav = -1;
 	saved_len   = 0;
+	cursor_pos  = 0;
 	line_ready  = true;
 }
 
+// Delete the char immediately before the cursor and shift the tail left.
+// At the end of the line this collapses to the simple "\b \b" pattern;
+// mid-line it has to redraw the tail and erase the now-vacated last char.
 static void backspace(void) {
-	if (line_len > 0) {
+	if (cursor_pos == 0) return;
+
+	if (cursor_pos == line_len) {
 		line_len--;
+		cursor_pos--;
 		write_str("\b \b");
+		return;
 	}
+
+	memmove(line_buf + cursor_pos - 1, line_buf + cursor_pos, line_len - cursor_pos);
+	line_len--;
+	cursor_pos--;
+
+	size_t tail_len = line_len - cursor_pos;
+	write_str("\b");
+	(void)write(STDOUT_FILENO, line_buf + cursor_pos, tail_len);
+	write_str(" ");
+	cursor_back(tail_len + 1);
 }
 
-static void append_printable(uint8_t b) {
+// Delete the char immediately after the cursor and shift the tail left.
+// Cursor position does not change.
+static void delete_forward(void) {
+	if (cursor_pos >= line_len) return;
+
+	memmove(line_buf + cursor_pos, line_buf + cursor_pos + 1, line_len - cursor_pos - 1);
+	line_len--;
+
+	size_t tail_len = line_len - cursor_pos;
+	if (tail_len > 0) {
+		(void)write(STDOUT_FILENO, line_buf + cursor_pos, tail_len);
+	}
+	write_str(" ");
+	cursor_back(tail_len + 1);
+}
+
+// Insert a printable byte at the cursor. At the end of the line this is
+// a straight append-and-echo; mid-line it splices and redraws the tail.
+static void insert_printable(uint8_t b) {
 	if (line_len + 1 >= LINE_BUF_SZ) return;
-	line_buf[line_len++] = (char)b;
+
+	if (cursor_pos == line_len) {
+		line_buf[line_len++] = (char)b;
+		cursor_pos++;
+		write_byte(b);
+		return;
+	}
+
+	memmove(line_buf + cursor_pos + 1, line_buf + cursor_pos, line_len - cursor_pos);
+	line_buf[cursor_pos] = (char)b;
+	line_len++;
+
+	size_t tail_len = line_len - cursor_pos - 1;
 	write_byte(b);
+	(void)write(STDOUT_FILENO, line_buf + cursor_pos + 1, tail_len);
+	cursor_back(tail_len);
+	cursor_pos++;
+}
+
+static void cursor_left(void) {
+	if (cursor_pos == 0) return;
+	cursor_back(1);
+	cursor_pos--;
+}
+
+static void cursor_right(void) {
+	if (cursor_pos >= line_len) return;
+	cursor_forward(1);
+	cursor_pos++;
 }
 
 bool term_feed_byte(uint8_t b) {
@@ -277,7 +366,7 @@ bool term_feed_byte(uint8_t b) {
 				return false;
 			}
 			if (b >= 0x20 && b < 0x7F) {
-				append_printable(b);
+				insert_printable(b);
 				return false;
 			}
 			// Unhandled control byte: swallow silently for now.
@@ -286,6 +375,7 @@ bool term_feed_byte(uint8_t b) {
 		case EDIT_ESC:
 			if (b == '[') {
 				edit_state = EDIT_CSI;
+				csi_param  = 0;
 			} else if (b == 'O') {
 				edit_state = EDIT_SS3;
 			} else {
@@ -298,26 +388,43 @@ bool term_feed_byte(uint8_t b) {
 
 		case EDIT_CSI:
 			// CSI bodies are sequences of 0x30-0x3F (digits, ?, ;, etc)
-			// followed by a final byte in 0x40-0x7E. A and B are the
-			// up and down arrow keys.
+			// followed by a final byte in 0x40-0x7E. Remember the first
+			// parameter byte so we can disambiguate ~-terminated sequences
+			// like Delete (ESC [ 3 ~). For multi-digit parameters only
+			// the first digit is kept here; that is enough for the
+			// editor keys we currently dispatch.
+			if (b >= 0x30 && b <= 0x3F) {
+				if (csi_param == 0) csi_param = b;
+				return false;
+			}
 			if (b >= 0x40 && b <= 0x7E) {
 				if (b == 'A') {
 					history_up();
 				} else if (b == 'B') {
 					history_down();
+				} else if (b == 'C') {
+					cursor_right();
+				} else if (b == 'D') {
+					cursor_left();
+				} else if (b == '~' && csi_param == '3') {
+					delete_forward();
 				}
 				edit_state = EDIT_NORMAL;
 			}
 			return false;
 
 		case EDIT_SS3:
-			// SS3 sequences are ESC O followed by one byte (often the same
-			// final letters as CSI). Some terminals send ESC O A / ESC O B
-			// for the arrow keys when the keypad is in application mode.
+			// SS3 sequences are ESC O followed by one byte. Some terminals
+			// send ESC O A/B/C/D for the arrow keys when the keypad is in
+			// application mode.
 			if (b == 'A') {
 				history_up();
 			} else if (b == 'B') {
 				history_down();
+			} else if (b == 'C') {
+				cursor_right();
+			} else if (b == 'D') {
+				cursor_left();
 			}
 			edit_state = EDIT_NORMAL;
 			return false;
@@ -336,6 +443,7 @@ size_t term_take_line(char *out, size_t outsz) {
 	out[n] = '\0';
 
 	line_len   = 0;
+	cursor_pos = 0;
 	line_ready = false;
 	return n;
 }
@@ -345,5 +453,8 @@ void term_repaint(const char *prompt) {
 	if (prompt) write_str(prompt);
 	if (line_len > 0) {
 		(void)write(STDOUT_FILENO, line_buf, line_len);
+	}
+	if (cursor_pos < line_len) {
+		cursor_back(line_len - cursor_pos);
 	}
 }
