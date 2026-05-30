@@ -45,6 +45,10 @@ Newest entries first.
   collide with the REPL protocol on stdout.
 - `video`: added `video_is_alive()`; the debugger gates `video_update()` on it.
 
+### Fixed
+
+- `midi.c`: include `<time.h>` for `time()`, which MinGW does not pull in transitively.
+
 ### Tooling
 
 - markdownlint configuration (`.markdownlint.jsonc`).

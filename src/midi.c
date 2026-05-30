@@ -4,6 +4,7 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <time.h>
 #include "glue.h"
 #include "midi.h"
 #include "audio.h"
