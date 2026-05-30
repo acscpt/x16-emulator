@@ -318,11 +318,36 @@ def main():
 		print("--- breakpoints ---")
 		d.cmd("sbp 00 abcd")
 		data, _ = d.cmd("lbp")
-		check("lbp returns the BP we set", data == ["00 abcd"], data)
+		check("lbp returns the BP we set", data == ["00: abcd"], data)
 
 		d.cmd("cbp 00 abcd")
 		data, _ = d.cmd("lbp")
 		check("after cbp, lbp returns no breakpoints", data == [], data)
+
+		print()
+		print("--- multiple breakpoints ---")
+		d.cmd("sbp 00 1111")
+		d.cmd("sbp 00 2222")
+		d.cmd("sbp 00 3333")
+		data, _ = d.cmd("lbp")
+		check("lbp lists all set breakpoints in order",
+		      data == ["00: 1111", "00: 2222", "00: 3333"], data)
+		d.cmd("sbp 00 2222")  # duplicate
+		data, _ = d.cmd("lbp")
+		check("re-adding a breakpoint is idempotent",
+		      data == ["00: 1111", "00: 2222", "00: 3333"], data)
+		d.cmd("cbp 00 2222")  # remove the middle one
+		data, _ = d.cmd("lbp")
+		check("cbp removes one without disturbing the rest",
+		      data == ["00: 1111", "00: 3333"], data)
+		try:
+			d.cmd("cbp 00 9999")
+			check("cbp on a missing breakpoint errors", False, "no ERR")
+		except AssertionError:
+			check("cbp on a missing breakpoint errors", True)
+		d.cmd("cbp *")  # clear all
+		data, _ = d.cmd("lbp")
+		check("cbp * clears every breakpoint", data == [], data)
 
 		print()
 		print("--- execution control ---")
@@ -408,6 +433,12 @@ def main():
 		d.cmd("tb")
 		data, _ = d.cmd("lbp")
 		check("tb sets BP at view_pc", len(data) == 1, data)
+		# tb adds alongside an explicit sbp rather than overwriting it.
+		d.cmd("sbp 00 abcd")
+		data, _ = d.cmd("lbp")
+		check("tb breakpoint coexists with an sbp breakpoint",
+		      len(data) == 2 and "00: abcd" in data, data)
+		d.cmd("cbp 00 abcd")
 		d.cmd("tb")
 		data, _ = d.cmd("lbp")
 		check("tb clears BP when set", data == [], data)

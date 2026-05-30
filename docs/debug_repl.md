@@ -102,7 +102,7 @@ where each header line is:
 
 3. The view cursor (see below): disasm position (`pc=`), data position (`d=`), pinned view bank (`b=`), and current mode (RAM or VRAM).
 
-4. The active breakpoint address. Absent when no breakpoint is set.
+4. The active breakpoint addresses (`bp=<bank>:<addr> ...`, space-separated). Absent when no breakpoint is set.
 
 Because the header is output at every prompt, stepping through code produces a running snapshot of the instruction stream and the registers. 
 
@@ -285,9 +285,9 @@ RDY
 
 ## Limitations
 
-### Single breakpoint slot
+### Breakpoint table size
 
-The debugger core currently exposes one user breakpoint. Both `sbp` and `tb` overwrite any existing breakpoint with the new one: silently in the case of `sbp`, with a single `* BP SET` event in the case of `tb`. 
+The debugger core holds up to 16 user breakpoints. `sbp` and `tb` add to the table without disturbing existing entries; `cbp` removes one (or `cbp *` all). Adding past 16 fails with `ERR breakpoint table full`. 
 
 ### Platform support
 

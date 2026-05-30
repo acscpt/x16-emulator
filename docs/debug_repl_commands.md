@@ -33,9 +33,9 @@ This is a per-command reference for everything available at the `x16db >` prompt
 | [`f`](#f) | View cursor | Fill RAM or VRAM (bypasses I/O) | - |
 | [`home`](#home) | View cursor | Snap disasm cursor to CPU PC | F1 |
 | [`tb`](#tb) | View cursor | Toggle breakpoint at disasm cursor | F9 |
-| [`sbp`](#sbp) | Breakpoints | Set the user breakpoint | F9 at cursor |
-| [`cbp`](#cbp) | Breakpoints | Clear the user breakpoint | F9 again at cursor |
-| [`lbp`](#lbp) | Breakpoints | List the active breakpoint | visible in panel |
+| [`sbp`](#sbp) | Breakpoints | Add a user breakpoint | F9 at cursor |
+| [`cbp`](#cbp) | Breakpoints | Clear one breakpoint, or all | F9 again at cursor |
+| [`lbp`](#lbp) | Breakpoints | List active breakpoints | visible in panel |
 | [`mem`](#mem) | Memory | Read RAM (stateless) | - |
 | [`wmm`](#wmm) | Memory | Write RAM bytes (stateless) | - |
 | [`fil`](#fil) | Memory | Fill RAM via the CPU write path | - |
@@ -509,7 +509,7 @@ RDY
 
 **Notes**
 
-The debugger currently exposes one user breakpoint. Toggling on a fresh address when a breakpoint is already set elsewhere silently overwrites the existing one; only the `* BP SET` line for the new position appears in the response.
+`tb` adds to the breakpoint table; toggling one on at a fresh cursor position leaves any breakpoints set elsewhere in place. Toggling at a position that already has a breakpoint clears just that one. The table holds up to 16 breakpoints; if it is full and the cursor position is not already set, `tb` responds with `ERR breakpoint table full`.
 
 **Associated commands**: [`d`](#d), [`sbp`](#sbp), [`cbp`](#cbp), [`lbp`](#lbp)
 
@@ -517,7 +517,7 @@ The debugger currently exposes one user breakpoint. Toggling on a fresh address 
 
 ## Breakpoints
 
-The debugger exposes a single user breakpoint. The three commands in this category set it explicitly, clear it explicitly, and report whether one is active. For setting and clearing a breakpoint at the disasm cursor's current position with a single keystroke, see [`tb`](#tb) in the View cursor section.
+The debugger holds up to 16 user breakpoints. The three commands in this category add one explicitly, clear one (or all) explicitly, and list those active. For adding and clearing a breakpoint at the disasm cursor's current position with a single keystroke, see [`tb`](#tb) in the View cursor section.
 
 ---
 
@@ -525,9 +525,9 @@ The debugger exposes a single user breakpoint. The three commands in this catego
 
 **Purpose**
 
-`sbp` arms the user breakpoint at an explicit bank and address. Once armed, the CPU stops with `* BRK BREAKPOINT <bank> <addr>` the next time execution reaches that location, whether during a `cnt`-resumed run or as the result of a step. This is the form to use from a script or any context where the address is known up front; for a one-keystroke toggle at the disasm cursor instead, see [`tb`](#tb).
+`sbp` adds a user breakpoint at an explicit bank and address. Once set, the CPU stops with `* BRK BREAKPOINT <bank> <addr>` the next time execution reaches that location, whether during a `cnt`-resumed run or as the result of a step. This is the form to use from a script or any context where the address is known up front; for a one-keystroke toggle at the disasm cursor instead, see [`tb`](#tb).
 
-The debugger currently exposes one user breakpoint slot. Setting `sbp` a second time silently overwrites the existing breakpoint with the new one.
+Each `sbp` adds to the table rather than replacing it; re-adding the same bank and address is a no-op. The table holds up to 16 breakpoints, and `sbp` responds with `ERR breakpoint table full` once it is exhausted.
 
 **Syntax**
 
@@ -559,12 +559,13 @@ No asynchronous event is emitted for breakpoints set or cleared by `sbp` and `cb
 
 **Purpose**
 
-`cbp` clears the user breakpoint, but only when its current bank and address match the arguments. The check guards against accidentally clearing a breakpoint that has since been re-armed elsewhere; if the addresses don't match, the command refuses with `ERR no such breakpoint` and the existing breakpoint stays in place.
+`cbp <bank> <addr>` removes the breakpoint at the given bank and address. If no breakpoint matches, the command refuses with `ERR no such breakpoint` and the table is unchanged. `cbp *` clears every breakpoint at once.
 
 **Syntax**
 
 ```text
 cbp <bank> <addr>
+cbp *
 ```
 
 **Example**
@@ -580,7 +581,7 @@ ERR no such breakpoint
 
 **Notes**
 
-To clear whatever is currently set without needing to know the address, use [`tb`](#tb) at the disasm cursor's position, or arm a fresh `sbp` to overwrite.
+To clear whatever is set at the disasm cursor without typing the address, use [`tb`](#tb) at that position. To wipe the whole table in one step, use `cbp *`.
 
 **Associated commands**: [`sbp`](#sbp), [`lbp`](#lbp), [`tb`](#tb)
 
@@ -592,7 +593,7 @@ To clear whatever is currently set without needing to know the address, use [`tb
 
 **Purpose**
 
-`lbp` reports the active breakpoint. When a breakpoint is set, the response is one line of `<bank> <addr>` (hex, space-separated) followed by `RDY`. When no breakpoint is set, the response is just `RDY` with no data line, so the presence of any preceding line is itself the signal that a breakpoint exists.
+`lbp` lists the active breakpoints, one `<bank>: <addr>` line each (hex), in the order they were added, followed by `RDY`. When none are set the response is just `RDY` with no data lines, so the line count is itself the breakpoint count.
 
 **Syntax**
 
@@ -605,10 +606,13 @@ lbp
 ```text
 x16db > sbp 00 c010
 RDY
-x16db > lbp
-00 c010
+x16db > sbp 00 e000
 RDY
-x16db > cbp 00 c010
+x16db > lbp
+00: c010
+00: e000
+RDY
+x16db > cbp *
 RDY
 x16db > lbp
 RDY
@@ -1128,7 +1132,7 @@ Turning off the `bp` line (line 4) is rarely needed because that line only appea
 
 **Purpose**
 
-`st` emits a one-shot dump of the debugger's internal state: the current machine mode, every piece of the view cursor (`view_pc`, `view_data`, `view_bank`, `view_mode`), the CPU's actual program counter (`regs.pc`), the cycles-since-resume counter, and the active breakpoint if any. It is a single command that collects what would otherwise need [`mod`](#mod), [`reg`](#reg), [`clk`](#clk), and [`lbp`](#lbp) in sequence, formatted with labeled rows rather than `key=value` lines so it reads as a snapshot rather than as a parseable record.
+`st` emits a one-shot dump of the debugger's internal state: the current machine mode, every piece of the view cursor (`view_pc`, `view_data`, `view_bank`, `view_mode`), the CPU's actual program counter (`regs.pc`), the cycles-since-resume counter, and any active breakpoints (one `bp` row each, or `(none)`). It is a single command that collects what would otherwise need [`mod`](#mod), [`reg`](#reg), [`clk`](#clk), and [`lbp`](#lbp) in sequence, formatted with labeled rows rather than `key=value` lines so it reads as a snapshot rather than as a parseable record.
 
 **Syntax**
 
