@@ -76,12 +76,19 @@ static void enqueue_event(const char *fmt, ...) {
 static void flush_events(void) {
 	if (event_count == 0) return;
 
-	// An async event (BRK / RES) may arrive while the user is sitting at a
-	// prompt, possibly mid-input. Erase the prompt line first so the event
-	// does not interleave with the in-progress input; the end-of-tick
-	// emit_prompt re-draws the prompt and term_repaint restores the input.
-	if (at_prompt && term_is_tty()) {
-		term_clear_line();
+	// An async event (BRK / RES) may arrive while the host is sitting at a
+	// prompt. The prompt has no trailing newline, so an event emitted right
+	// after it would glue onto the prompt line ("x16db > * BRK ...") and a
+	// parsing host would not recognise it as an event. On a tty erase the
+	// prompt line so the event does not interleave with in-progress input;
+	// for a pipe emit a newline so the event lands on its own line. Either
+	// way the end-of-tick emit_prompt re-draws the prompt afterward.
+	if (at_prompt) {
+		if (term_is_tty()) {
+			term_clear_line();
+		} else {
+			fputc('\n', stdout);
+		}
 		at_prompt = false;
 	}
 	for (int i = 0; i < event_count; i++) {

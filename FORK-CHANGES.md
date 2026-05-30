@@ -33,6 +33,8 @@ Newest entries first.
 
 ### Fixed
 
+- `-debugstdio` pipe protocol: an asynchronous event (`* BRK` / `* WP` / `* RES`) that fires while the host is sitting at a prompt now starts on its own line. The prompt carries no trailing newline, so a fast breakpoint or watchpoint hit could previously glue onto it (`x16db > * BRK ...`) and a parsing host would miss the event. A TTY already redrew the prompt line; a pipe now emits a leading newline for the same reason.
+
 - Windows build: static-link winpthread for `midi.c`'s mutexes. It previously linked only transitively via FluidSynth, so `-DENABLE_FLUIDSYNTH=OFF` failed to link.
 
 - `video_win32.c`: build under mingw-w64 headers that predate the Windows 11 DWM rounded-corner constants (fall back to literal values).
