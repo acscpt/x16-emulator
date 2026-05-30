@@ -32,6 +32,7 @@ Newest entries first.
     the terminal.
   - User guide and command reference: [`docs/debug_repl.md`](./docs/debug_repl.md)
     and [`docs/debug_repl_commands.md`](./docs/debug_repl_commands.md).
+  - Runs on Linux, macOS, and Windows.
   - Python test harnesses under `testbench/`: `x16dbg_smoke.py` (the pipe
     protocol) and `x16dbg_pty.py` (the TTY line-editor and signal paths).
 

@@ -287,7 +287,7 @@ RDY
 
 ### Platform support
 
-Linux and macOS are fully implemented. WebAssembly compiles, but the `-debugstdio` frontend is a build-time no-op there because the browser has no stdin to read from. Windows is stubbed: passing `-debugstdio` to a Windows build prints "not yet supported" on stderr and exits the frontend without starting the emulator loop. 
+Linux, macOS, and Windows are implemented. WebAssembly compiles, but the `-debugstdio` frontend is a build-time no-op there because the browser has no stdin to read from. 
 
 ### CPU sampling during RUN
 
