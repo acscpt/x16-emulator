@@ -47,6 +47,7 @@ Newest entries first.
 
 ### Fixed
 
+- `video_win32.c`: build under mingw-w64 headers that predate the Windows 11 DWM rounded-corner constants (fall back to literal values).
 - `midi.c`: include `<time.h>` for `time()`, which MinGW does not pull in transitively.
 
 ### Tooling
