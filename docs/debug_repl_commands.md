@@ -12,7 +12,7 @@ This is a per-command reference for everything available at the `x16db >` prompt
 
 - **VRAM addresses are 17-bit.** VRAM is a separate address space, `00000`-`1ffff`, and the VRAM-specific commands (`v`, `vmr`, `vmw`) take no bank argument.
 
-- **Responses end with `RDY` or `ERR <message>`.** Data lines come before the terminator. Asynchronous events (`* BRK ...`, `* RES`, `* BP ...`) appear between commands, never inside one.
+- **Responses end with `RDY` or `ERR <message>`.** Data lines come before the terminator. Asynchronous events (`* BRK ...`, `* RES`, `* BP ...`, `* WP ...`) appear between commands, never inside one.
 
 - **Case-sensitive.** Commands and register names are lowercase. Arguments are split on whitespace; the shell does not tokenize quoted strings.
 
@@ -36,6 +36,10 @@ This is a per-command reference for everything available at the `x16db >` prompt
 | [`sbp`](#sbp) | Breakpoints | Add a user breakpoint | F9 at cursor |
 | [`cbp`](#cbp) | Breakpoints | Clear one breakpoint, or all | F9 again at cursor |
 | [`lbp`](#lbp) | Breakpoints | List active breakpoints | visible in panel |
+| [`swp`](#swp) | Watchpoints | Add a write watchpoint | - |
+| [`cwp`](#cwp) | Watchpoints | Clear one watchpoint, or all | - |
+| [`lwp`](#lwp) | Watchpoints | List active watchpoints | - |
+| [`wp`](#wp) | Watchpoints | Enable / disable a watchpoint | - |
 | [`mem`](#mem) | Memory | Read RAM (stateless) | - |
 | [`wmm`](#wmm) | Memory | Write RAM bytes (stateless) | - |
 | [`fil`](#fil) | Memory | Fill RAM via the CPU write path | - |
@@ -619,6 +623,155 @@ RDY
 ```
 
 **Associated commands**: [`sbp`](#sbp), [`cbp`](#cbp), [`tb`](#tb)
+
+[^ Index](#index)
+
+## Watchpoints
+
+A watchpoint, or data breakpoint, stops the CPU when the running program *accesses* a memory location, where a breakpoint stops when execution *reaches* one. Their headline use is tracking down memory corruption: when a byte is being clobbered and you do not know by whom, arm a write watchpoint on it, run, and every hit hands back the program counter of the instruction that wrote it. The culprit reveals itself instead of being guessed at.
+
+The debugger holds up to 16 watchpoints, managed by slot id. They are currently write-only; read watchpoints and conditional watchpoints arrive in later builds. A hit fires an asynchronous `* WP <id> w <bank>:<addr>=<val> pc=<bank>:<pc>` event and returns the CPU to STOP at the instruction boundary just after the write, with the disasm cursor on the next instruction. The fields are the watchpoint id, the access type (`w`), the bank and address written and the byte value, and the bank and program counter of the instruction that made the write.
+
+A watchpoint fires only on writes made by the running CPU. Debugger pokes ([`wmm`](#wmm), [`fil`](#fil)) are deliberately exempt, so inspecting or editing memory never trips your own watchpoints.
+
+---
+
+### `swp`
+
+**Purpose**
+
+`swp` arms a write watchpoint over a single address or an inclusive range. While the CPU runs, the next instruction that writes anywhere in the range stops it and emits the `* WP` event described above. This is the answer to "what is changing this byte?".
+
+Each `swp` takes the lowest free slot and prints the assigned id (`wp N set`). The id is stable for the watchpoint's lifetime, so it keeps referring to the same watchpoint until you delete it. The table holds up to 16 watchpoints; `swp` responds with `ERR watchpoint table full` once it is exhausted. Read access (`r` / `rw`) and conditions (`if <expr>`) are reserved for later builds and are rejected for now.
+
+**Syntax**
+
+```text
+swp [w] <bank> <addr> [end]
+```
+
+- `[w]` is the optional access type. Only `w` (write) is accepted in this build, and it is the default, so it can be omitted.
+- `<bank>` is the X16 RAM/ROM bank for an address in the `$A000-$FFFF` window. Below that window the address is unbanked and the bank argument is conventionally `00`. A banked watchpoint matches only while the bank it names is the one currently mapped; an unbanked (zero-page / low-RAM) watchpoint always matches.
+- `<addr>` is the 16-bit address. `[end]` is an optional inclusive range end; omit it to watch a single byte.
+
+**Example**
+
+```text
+x16db > swp 00 0070
+wp 0 set
+RDY
+x16db > cnt
+RDY
+* RES
+* WP 0 w 00:0070=aa pc=00:c1a3
+```
+
+The watchpoint at zero-page `$70` fires when the instruction at `$C1A3` writes `$AA` to it, and the CPU stops.
+
+**Notes**
+
+To watch a banked address, name the bank: `swp 02 a100` watches `$A100` only while RAM bank 2 is mapped. A range is handy for a small structure: `swp 00 0080 008f` covers sixteen bytes.
+
+**Associated commands**: [`cwp`](#cwp), [`lwp`](#lwp), [`wp`](#wp)
+
+[^ Index](#index)
+
+---
+
+### `cwp`
+
+**Purpose**
+
+`cwp <id>` removes the watchpoint in slot `<id>`. If the slot is empty the command refuses with `ERR no such watchpoint`. `cwp *` clears every watchpoint at once.
+
+Removing a watchpoint frees its slot without renumbering the others, so the remaining ids are unchanged and the next `swp` reuses the lowest free slot. That slot stability is what lets an id you are holding always mean the same watchpoint.
+
+**Syntax**
+
+```text
+cwp <id>
+cwp *
+```
+
+**Example**
+
+```text
+x16db > lwp
+0: w 00:0070 hits=0
+1: w 00:0080-008f hits=0
+x16db > cwp 0
+RDY
+x16db > lwp
+1: w 00:0080-008f hits=0
+```
+
+After clearing slot 0, slot 1 keeps its id; it is not renumbered to 0.
+
+**Notes**
+
+`<id>` is the decimal slot number shown by [`lwp`](#lwp), not an address.
+
+**Associated commands**: [`swp`](#swp), [`lwp`](#lwp), [`wp`](#wp)
+
+[^ Index](#index)
+
+---
+
+### `lwp`
+
+**Purpose**
+
+`lwp` lists the active watchpoints, one per line, followed by `RDY`. Each line is `<id>: <access> <bank>:<addr>[-<end>] hits=<n>`, with a trailing ` off` when the watchpoint is disabled. The id is the slot number used by [`cwp`](#cwp) and [`wp`](#wp); `hits` is the running count of times the watchpoint has fired. When none are set the response is just `RDY`, so the line count is the watchpoint count.
+
+**Syntax**
+
+```text
+lwp
+```
+
+**Example**
+
+```text
+x16db > swp 00 0070
+wp 0 set
+x16db > swp 00 0080 008f
+wp 1 set
+x16db > wp 1 off
+RDY
+x16db > lwp
+0: w 00:0070 hits=0
+1: w 00:0080-008f hits=0 off
+RDY
+```
+
+**Associated commands**: [`swp`](#swp), [`cwp`](#cwp), [`wp`](#wp)
+
+[^ Index](#index)
+
+---
+
+### `wp`
+
+**Purpose**
+
+`wp <id> on` and `wp <id> off` enable or disable the watchpoint in slot `<id>` without removing it. A disabled watchpoint keeps its definition and hit count but does not fire, which is the natural way to bisect a problem: mute one watchpoint at a time rather than deleting and retyping it. `wp` refuses with `ERR no such watchpoint` if the slot is empty.
+
+**Syntax**
+
+```text
+wp <id> on | off
+```
+
+**Example**
+
+```text
+x16db > wp 1 off
+RDY
+x16db > wp 1 on
+RDY
+```
+
+**Associated commands**: [`swp`](#swp), [`cwp`](#cwp), [`lwp`](#lwp)
 
 [^ Index](#index)
 

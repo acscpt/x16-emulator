@@ -185,6 +185,14 @@ The emulator left STOP for RUN. Fired by `cnt`, and by `sov` when the instructio
 
 A breakpoint was toggled by `tb` (toggle at the view cursor's disasm position). `sbp` and `cbp` change breakpoint state silently; they print `RDY` only.
 
+### `* WP <id> w <bank>:<addr>=<val> pc=<bank>:<pc>`
+
+A watchpoint fired: the running CPU wrote a watched memory location, and the emulator entered STOP just after the write. `<id>` is the watchpoint's slot id, `w` is the access type (write), `<bank>:<addr>=<val>` is the location written and the byte value, and `pc=<bank>:<pc>` is the instruction that made the write. See [`swp`](./debug_repl_commands.md#swp) for arming watchpoints.
+
+```text
+* WP 0 w 00:0070=aa pc=00:c1a3
+```
+
 ## Examples
 
 The transcripts below sometimes include the per-prompt header lines and sometimes omit them for brevity. In a live session the header can be turned off with `hdr off`.
@@ -203,6 +211,22 @@ RDY
 ```
 
 `sbp` arms a breakpoint at `00:c010`. `cnt` resumes the CPU and the prompt returns immediately. When the CPU reaches `c010` it stops on its own and the `* BRK BREAKPOINT` line fires. `stp` single-steps one instruction; the CPU lands on `c013` (the instruction at `c010` was three bytes wide). After each break, the disasm cursor auto-snaps to the new PC.
+
+### Find what writes a memory location
+
+A zero-page byte at `$70` is being corrupted and you do not know which code does it. Arm a write watchpoint on it and run:
+
+```text
+x16db > swp 00 0070
+wp 0 set
+RDY
+x16db > cnt
+RDY
+* RES
+* WP 0 w 00:0070=aa pc=00:c1a3
+```
+
+The CPU runs until an instruction writes `$70`, then stops just after the write. The `* WP` line names the culprit directly: the instruction at `$C1A3` wrote `$AA`. The CPU is now stopped on the following instruction, so [`reg`](./debug_repl_commands.md#reg), [`stk`](./debug_repl_commands.md#stk), and the disassembly around `$C1A3` are all available to understand the context. `cnt` again continues to the next write; `lwp` shows the running hit count; `cwp 0` removes the watchpoint when done.
 
 ### Break a running program, inspect memory, step through it
 
