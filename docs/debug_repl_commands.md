@@ -4,7 +4,7 @@ This is a per-command reference for everything available at the `x16db >` prompt
 
 ## Conventions
 
-- **Numbers are hex.** Every numeric argument (addresses, banks, byte values, counts, offsets) is parsed as hexadecimal without prefix. `c010`, not `$c010` or `0xc010`. Output values are also lowercase hex without prefix.
+- **Numbers are hex.** Every numeric argument (addresses, banks, byte values, counts, offsets) is parsed as hexadecimal without prefix. `c010`, not `$c010` or `0xc010`. Output values are also lowercase hex without prefix. The one exception is inside a [condition expression](#conditions), which follows C conventions: decimal by default, hex only with a `$` or `0x` prefix.
 
 - **Banks are one byte.** X16 RAM has 256 banks (`00`-`ff`); ROM has 32 banks (`00`-`1f`). The CPU's currently-selected bank lives in `$00` (RAM) and `$01` (ROM); commands that take an explicit bank read or write the named bank regardless of which one the CPU has selected.
 
@@ -33,10 +33,10 @@ This is a per-command reference for everything available at the `x16db >` prompt
 | [`f`](#f) | View cursor | Fill RAM or VRAM (bypasses I/O) | - |
 | [`home`](#home) | View cursor | Snap disasm cursor to CPU PC | F1 |
 | [`tb`](#tb) | View cursor | Toggle breakpoint at disasm cursor | F9 |
-| [`sbp`](#sbp) | Breakpoints | Add a user breakpoint | F9 at cursor |
+| [`sbp`](#sbp) | Breakpoints | Add a user breakpoint, optionally [conditional](#conditions) | F9 at cursor |
 | [`cbp`](#cbp) | Breakpoints | Clear one breakpoint, or all | F9 again at cursor |
 | [`lbp`](#lbp) | Breakpoints | List active breakpoints | visible in panel |
-| [`swp`](#swp) | Watchpoints | Add a write watchpoint | - |
+| [`swp`](#swp) | Watchpoints | Add a write watchpoint, optionally [conditional](#conditions) | - |
 | [`cwp`](#cwp) | Watchpoints | Clear one watchpoint, or all | - |
 | [`lwp`](#lwp) | Watchpoints | List active watchpoints | - |
 | [`wp`](#wp) | Watchpoints | Enable / disable a watchpoint | - |
@@ -533,25 +533,32 @@ The debugger holds up to 16 user breakpoints. The three commands in this categor
 
 Each `sbp` adds to the table rather than replacing it; re-adding the same bank and address is a no-op. The table holds up to 16 breakpoints, and `sbp` responds with `ERR breakpoint table full` once it is exhausted.
 
+An optional `if <cond>` clause attaches a [condition](#conditions): the breakpoint then stops the CPU only when `<cond>` is true at that address, and is otherwise transparent. See [Conditions](#conditions) for the expression grammar.
+
 **Syntax**
 
 ```text
-sbp <bank> <addr>
+sbp <bank> <addr> [if <cond>]
 ```
 
 - `<bank>` is the one-byte CPU bank.
 - `<addr>` is the 16-bit CPU address.
+- `if <cond>` is an optional [condition expression](#conditions); the breakpoint stops only when it evaluates non-zero.
 
 **Example**
 
 ```text
 x16db > sbp 00 c010
 RDY
+x16db > sbp 00 c04f if a == $ff
+RDY
 ```
 
 **Notes**
 
 No asynchronous event is emitted for breakpoints set or cleared by `sbp` and `cbp`. Use [`tb`](#tb) at the disasm cursor if you want the `* BP SET` / `* BP CLEAR` events to appear in the protocol stream.
+
+A malformed condition is rejected here, when the breakpoint is set, with `ERR <message>`; the breakpoint is not added.
 
 **Associated commands**: [`cbp`](#cbp), [`lbp`](#lbp), [`tb`](#tb)
 
@@ -597,7 +604,7 @@ To clear whatever is set at the disasm cursor without typing the address, use [`
 
 **Purpose**
 
-`lbp` lists the active breakpoints, one `<bank>: <addr>` line each (hex), in the order they were added, followed by `RDY`. When none are set the response is just `RDY` with no data lines, so the line count is itself the breakpoint count.
+`lbp` lists the active breakpoints, one `<bank>: <addr>` line each (hex), in the order they were added, followed by `RDY`. A breakpoint with a [condition](#conditions) appends `  if <cond>` to its line. When none are set the response is just `RDY` with no data lines, so the line count is itself the breakpoint count.
 
 **Syntax**
 
@@ -610,11 +617,11 @@ lbp
 ```text
 x16db > sbp 00 c010
 RDY
-x16db > sbp 00 e000
+x16db > sbp 00 e000 if mem[$30] == $01
 RDY
 x16db > lbp
 00: c010
-00: e000
+00: e000  if mem[$30] == $01
 RDY
 x16db > cbp *
 RDY
@@ -630,7 +637,7 @@ RDY
 
 A watchpoint, or data breakpoint, stops the CPU when the running program *accesses* a memory location, where a breakpoint stops when execution *reaches* one. Their headline use is tracking down memory corruption: when a byte is being clobbered and you do not know by whom, arm a write watchpoint on it, run, and every hit hands back the program counter of the instruction that wrote it. The culprit reveals itself instead of being guessed at.
 
-The debugger holds up to 16 watchpoints, managed by slot id. They are currently write-only; read watchpoints and conditional watchpoints arrive in later builds. A hit fires an asynchronous `* WP <id> w <bank>:<addr>=<val> pc=<bank>:<pc>` event and returns the CPU to STOP at the instruction boundary just after the write, with the disasm cursor on the next instruction. The fields are the watchpoint id, the access type (`w`), the bank and address written and the byte value, and the bank and program counter of the instruction that made the write.
+The debugger holds up to 16 watchpoints, managed by slot id. They are currently write-only; read watchpoints arrive in a later build. A watchpoint can carry a [condition](#conditions) so it stops only on writes that matter. A hit fires an asynchronous `* WP <id> w <bank>:<addr>=<val> pc=<bank>:<pc>` event and returns the CPU to STOP at the instruction boundary just after the write, with the disasm cursor on the next instruction. The fields are the watchpoint id, the access type (`w`), the bank and address written and the byte value, and the bank and program counter of the instruction that made the write.
 
 A watchpoint fires only on writes made by the running CPU. Debugger pokes ([`wmm`](#wmm), [`fil`](#fil)) are deliberately exempt, so inspecting or editing memory never trips your own watchpoints.
 
@@ -642,17 +649,20 @@ A watchpoint fires only on writes made by the running CPU. Debugger pokes ([`wmm
 
 `swp` arms a write watchpoint over a single address or an inclusive range. While the CPU runs, the next instruction that writes anywhere in the range stops it and emits the `* WP` event described above. This is the answer to "what is changing this byte?".
 
-Each `swp` takes the lowest free slot and prints the assigned id (`wp N set`). The id is stable for the watchpoint's lifetime, so it keeps referring to the same watchpoint until you delete it. The table holds up to 16 watchpoints; `swp` responds with `ERR watchpoint table full` once it is exhausted. Read access (`r` / `rw`) and conditions (`if <expr>`) are reserved for later builds and are rejected for now.
+Each `swp` takes the lowest free slot and prints the assigned id (`wp N set`). The id is stable for the watchpoint's lifetime, so it keeps referring to the same watchpoint until you delete it. The table holds up to 16 watchpoints; `swp` responds with `ERR watchpoint table full` once it is exhausted. Read access (`r` / `rw`) is reserved for a later build and is rejected for now.
+
+An optional `if <cond>` clause attaches a [condition](#conditions): the watchpoint then stops only on a write for which `<cond>` is true, and the `val`, `addr`, and `is_write` operands describe that write. See [Conditions](#conditions).
 
 **Syntax**
 
 ```text
-swp [w] <bank> <addr> [end]
+swp [w] <bank> <addr> [end] [if <cond>]
 ```
 
 - `[w]` is the optional access type. Only `w` (write) is accepted in this build, and it is the default, so it can be omitted.
 - `<bank>` is the X16 RAM/ROM bank for an address in the `$A000-$FFFF` window. Below that window the address is unbanked and the bank argument is conventionally `00`. A banked watchpoint matches only while the bank it names is the one currently mapped; an unbanked (zero-page / low-RAM) watchpoint always matches.
 - `<addr>` is the 16-bit address. `[end]` is an optional inclusive range end; omit it to watch a single byte.
+- `if <cond>` is an optional [condition expression](#conditions); the watchpoint stops only on a write where it evaluates non-zero.
 
 **Example**
 
@@ -671,6 +681,8 @@ The watchpoint at zero-page `$70` fires when the instruction at `$C1A3` writes `
 **Notes**
 
 To watch a banked address, name the bank: `swp 02 a100` watches `$A100` only while RAM bank 2 is mapped. A range is handy for a small structure: `swp 00 0080 008f` covers sixteen bytes.
+
+To stop only on a particular value, add a condition: `swp 00 0070 if val == $ff` ignores every write to `$70` except the one that stores `$FF`. A malformed condition is rejected here, when the watchpoint is set, with `ERR <message>`.
 
 **Associated commands**: [`cwp`](#cwp), [`lwp`](#lwp), [`wp`](#wp)
 
@@ -721,7 +733,7 @@ After clearing slot 0, slot 1 keeps its id; it is not renumbered to 0.
 
 **Purpose**
 
-`lwp` lists the active watchpoints, one per line, followed by `RDY`. Each line is `<id>: <access> <bank>:<addr>[-<end>] hits=<n>`, with a trailing ` off` when the watchpoint is disabled. The id is the slot number used by [`cwp`](#cwp) and [`wp`](#wp); `hits` is the running count of times the watchpoint has fired. When none are set the response is just `RDY`, so the line count is the watchpoint count.
+`lwp` lists the active watchpoints, one per line, followed by `RDY`. Each line is `<id>: <access> <bank>:<addr>[-<end>] hits=<n>`, followed by ` if <cond>` when it carries a [condition](#conditions) and ` off` when it is disabled. The id is the slot number used by [`cwp`](#cwp) and [`wp`](#wp); `hits` is the running count of times the watchpoint has fired. When none are set the response is just `RDY`, so the line count is the watchpoint count.
 
 **Syntax**
 
@@ -734,13 +746,13 @@ lwp
 ```text
 x16db > swp 00 0070
 wp 0 set
-x16db > swp 00 0080 008f
+x16db > swp 00 0080 008f if val != $00
 wp 1 set
-x16db > wp 1 off
+x16db > wp 0 off
 RDY
 x16db > lwp
-0: w 00:0070 hits=0
-1: w 00:0080-008f hits=0 off
+0: w 00:0070 hits=0 off
+1: w 00:0080-008f hits=0 if val != $00
 RDY
 ```
 
@@ -772,6 +784,70 @@ RDY
 ```
 
 **Associated commands**: [`swp`](#swp), [`cwp`](#cwp), [`lwp`](#lwp)
+
+[^ Index](#index)
+
+## Conditions
+
+A breakpoint or watchpoint can carry a condition: an expression, written after the keyword `if`, that must evaluate to a non-zero value for a hit to stop the CPU. When the condition is false the candidate hit is ignored and the CPU runs on, the watchpoint's hit count unchanged. This turns "stop here" into "stop here when it matters": the pass through a loop where the index is finally zero, the one write that stores a sentinel, the call made only with a particular argument.
+
+The expression is evaluated on the host at the moment of the candidate hit, against a snapshot of the machine's state. It never runs on the emulated CPU and never disturbs it; there are no guest cycles, memory writes, or side effects. A condition that does not parse is rejected when the breakpoint or watchpoint is set, with `ERR <message>`, so a live breakpoint always holds a valid condition.
+
+### Operands
+
+Each operand resolves to an integer read from the machine at the point of the hit.
+
+| Operand | Meaning |
+| --- | --- |
+| `a` `x` `y` | Accumulator and index registers |
+| `sp` | Stack pointer |
+| `pc` | Program counter |
+| `p` | Processor status byte |
+| `n` `v` `z` `c` `i` `d` | Individual status flags, each `0` or `1` |
+| `mem[<expr>]` | The byte of CPU memory at address `<expr>`, in the currently mapped bank |
+| `addr` | The address being accessed (watchpoints) |
+| `val` | The byte value being written (watchpoints) |
+| `is_write` `is_read` | The access type, `0` or `1` (watchpoints) |
+
+`addr`, `val`, `is_write`, and `is_read` describe the access that triggered a watchpoint. A breakpoint has no access behind it, so in a breakpoint condition they read as `0`. `is_read` is reserved for read watchpoints and is `0` for now. `mem[...]` reads the live byte at any address: `mem[$70]`, `mem[sp + 1]`.
+
+### Operators
+
+The usual C operators, with C precedence and associativity. Highest precedence first:
+
+| Operators | Meaning |
+| --- | --- |
+| `-` `~` `!` (unary) | Negate, bitwise NOT, logical NOT |
+| `*` `/` `%` | Multiply, divide, modulo |
+| `+` `-` | Add, subtract |
+| `<<` `>>` | Shift |
+| `<` `<=` `>` `>=` | Relational |
+| `==` `!=` | Equality |
+| `&` | Bitwise AND |
+| `^` | Bitwise XOR |
+| `\|` | Bitwise OR |
+| `&&` | Logical AND, short-circuit |
+| `\|\|` | Logical OR, short-circuit |
+
+Parentheses group as usual. The comparison and logical operators yield `0` or `1`, and the logical operators short-circuit: in `a && mem[a]` the right side is not read when `a` is zero.
+
+### Values
+
+Working values are signed 64-bit integers, so intermediate arithmetic does not wrap at a byte or a word and `val - $80 < 0` reads the way it looks. Operands still resolve at their natural width: a byte for `a`, the flags, `val`, and `mem[...]`; sixteen bits for `pc` and `sp`.
+
+Literals are decimal (`42`) or hexadecimal with a `$` or `0x` prefix (`$ff`, `0xFF`). A bare `ff` is an identifier, not a number, and is rejected. Division or modulo by zero yields `0` rather than faulting.
+
+### Examples
+
+```text
+sbp 00 c04f if a == $ff
+sbp 00 c04f if x >= 8 && y == 0
+sbp 00 e000 if mem[$30] == $01 && c
+swp w 00 0070 if val != $00
+swp w 00 0080 008f if is_write && addr == $0083
+```
+
+**Associated commands**: [`sbp`](#sbp), [`swp`](#swp), [`lbp`](#lbp), [`lwp`](#lwp)
 
 [^ Index](#index)
 

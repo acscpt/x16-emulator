@@ -228,6 +228,22 @@ RDY
 
 The CPU runs until an instruction writes `$70`, then stops just after the write. The `* WP` line names the culprit directly: the instruction at `$C1A3` wrote `$AA`. The CPU is now stopped on the following instruction, so [`reg`](./debug_repl_commands.md#reg), [`stk`](./debug_repl_commands.md#stk), and the disassembly around `$C1A3` are all available to understand the context. `cnt` again continues to the next write; `lwp` shows the running hit count; `cwp 0` removes the watchpoint when done.
 
+### Stop only when a condition holds
+
+`$70` is written constantly and only one write matters: the one that stores the sentinel `$FF`. Stopping on every write and stepping past the uninteresting ones is tedious. Attach a [condition](./debug_repl_commands.md#conditions) so the watchpoint fires only on that write:
+
+```text
+x16db > swp 00 0070 if val == $ff
+wp 0 set
+RDY
+x16db > cnt
+RDY
+* RES
+* WP 0 w 00:0070=ff pc=00:c2f1
+```
+
+The CPU runs through every other write to `$70` untouched and stops only when `$FF` is stored, at `$C2F1`. A condition reads live machine state at the moment of the hit: registers (`a`, `x`, `y`, `sp`, `pc`), the status flags (`n v z c i d`), memory (`mem[$30]`), and, for a watchpoint, the access itself (`val`, `addr`, `is_write`). The same clause works on a breakpoint, so `sbp 00 c04f if a == $ff && mem[$30] == $01` stops at `$C04F` only on the pass where both hold. The expression runs on the host and never disturbs the emulated CPU. See [Conditions](./debug_repl_commands.md#conditions) for the full grammar.
+
 ### Break a running program, inspect memory, step through it
 
 The CPU has been running freely since launch. The header shows the CPU mid-execution; arm a breakpoint at `$C010`:
