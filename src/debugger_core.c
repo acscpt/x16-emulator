@@ -40,10 +40,23 @@ static int      stopped_pc         = 0;
 static uint8_t  stopped_pc_bank    = 0;
 static int      stopped_pc_x16Bank = -1;
 
-// Breakpoints. Single user breakpoint plus a one-shot step-breakpoint
-// used by step-over to break at the instruction after a JSR/JSL.
-static struct breakpoint user_bp = { -1, 0, -1 };
+// Breakpoints. A fixed table of user breakpoints plus a one-shot
+// step-breakpoint used by step-over to break at the instruction after a
+// JSR/JSL. user_bp[0..user_bp_count-1] are the active entries, in the
+// order they were added.
+static struct breakpoint user_bp[DBG_MAX_BREAKPOINTS];
+static int               user_bp_count = 0;
 static struct breakpoint step_bp = { -1, 0, -1 };
+
+// Exact-match index of (pc, bank, x16Bank) in the user table, or -1.
+static int find_user_bp(int pc, uint8_t bank, int x16Bank) {
+	for (int i = 0; i < user_bp_count; i++) {
+		if (user_bp[i].pc == pc && user_bp[i].bank == bank && user_bp[i].x16Bank == x16Bank) {
+			return i;
+		}
+	}
+	return -1;
+}
 
 // View-cursor state (see debugger_core.h "View-cursor state" section).
 // view_pc == -1 is the lazy-init sentinel; the first access populates
@@ -121,7 +134,13 @@ dbg_tick_t dbg_tick(void) {
 	// `currentMode != DMODE_STOP` guard). On a hit, clear the one-shot
 	// step breakpoint inline (matches debugger.c:191-193).
 	if (currentMode != DMODE_STOP) {
-		bool hit_user = hit_bp(regs.pc, regs.k, user_bp);
+		bool hit_user = false;
+		for (int i = 0; i < user_bp_count; i++) {
+			if (hit_bp(regs.pc, regs.k, user_bp[i])) {
+				hit_user = true;
+				break;
+			}
+		}
 		bool hit_step = hit_bp(regs.pc, regs.k, step_bp);
 		if (hit_user || hit_step) {
 			step_bp.pc      = -1;
@@ -192,12 +211,62 @@ void dbg_reset_cpu(void) {
 	reset6502(regs.is65c816);
 }
 
+bool dbg_breakpoint_add(struct breakpoint bp) {
+	if (bp.pc < 0) {
+		return false;
+	}
+	if (find_user_bp(bp.pc, bp.bank, bp.x16Bank) >= 0) {
+		return true; // already present; idempotent
+	}
+	if (user_bp_count >= DBG_MAX_BREAKPOINTS) {
+		return false; // table full
+	}
+	user_bp[user_bp_count++] = bp;
+	return true;
+}
+
+bool dbg_breakpoint_remove(struct breakpoint bp) {
+	int i = find_user_bp(bp.pc, bp.bank, bp.x16Bank);
+	if (i < 0) {
+		return false;
+	}
+	// Compact the table, preserving insertion order.
+	for (int j = i; j < user_bp_count - 1; j++) {
+		user_bp[j] = user_bp[j + 1];
+	}
+	user_bp_count--;
+	return true;
+}
+
+void dbg_breakpoint_clear_all(void) {
+	user_bp_count = 0;
+}
+
+int dbg_breakpoint_count(void) {
+	return user_bp_count;
+}
+
+struct breakpoint dbg_breakpoint_get(int idx) {
+	if (idx < 0 || idx >= user_bp_count) {
+		struct breakpoint none = { -1, 0, -1 };
+		return none;
+	}
+	return user_bp[idx];
+}
+
+// Legacy single-slot API, retained for the SDL frontend (F9 toggle and
+// breakpoint-status render). SDL only ever manages one breakpoint, and the
+// `-debug` and `-debugstdio` frontends are mutually exclusive, so treating
+// the table as a single slot here never clobbers stdio's breakpoints.
 void dbg_set_breakpoint(struct breakpoint bp) {
-	user_bp = bp;
+	dbg_breakpoint_clear_all();
+	if (bp.pc >= 0) {
+		dbg_breakpoint_add(bp);
+	}
 }
 
 struct breakpoint dbg_get_breakpoint(void) {
-	return user_bp;
+	return dbg_breakpoint_get(0);
 }
 
 uint32_t dbg_clocks_since_resume(void) {

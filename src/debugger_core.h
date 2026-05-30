@@ -92,12 +92,32 @@ void dbg_reset_cpu(void);
 // Breakpoints
 // =========================================================================
 
-// Set the single user breakpoint. Replaces any previous value. pc == -1
-// clears it. Equivalent to the pre-refactor DEBUGSetBreakPoint().
-void dbg_set_breakpoint(struct breakpoint bp);
+// Maximum number of simultaneous user breakpoints.
+#define DBG_MAX_BREAKPOINTS 16
 
-// Read the current user breakpoint. pc == -1 means "no breakpoint set".
-// Used by the SDL frontend's F9 toggle and breakpoint-status render.
+// Add a breakpoint to the table. Adding one already present is a no-op.
+// Returns false if bp.pc < 0 or the table is full, true otherwise.
+bool dbg_breakpoint_add(struct breakpoint bp);
+
+// Remove the breakpoint matching bp exactly (pc, bank, x16Bank). Returns
+// true if one was removed, false if no exact match was present.
+bool dbg_breakpoint_remove(struct breakpoint bp);
+
+// Remove every user breakpoint.
+void dbg_breakpoint_clear_all(void);
+
+// Number of active user breakpoints (0..DBG_MAX_BREAKPOINTS).
+int dbg_breakpoint_count(void);
+
+// Breakpoint at table index idx (0..count-1), in insertion order. Out-of-
+// range indices return a cleared breakpoint (pc == -1).
+struct breakpoint dbg_breakpoint_get(int idx);
+
+// Legacy single-slot API, retained for the SDL frontend only. dbg_set_
+// breakpoint replaces the whole table with the one breakpoint (or clears
+// it when pc == -1); dbg_get_breakpoint returns the first entry, or a
+// cleared breakpoint when none are set.
+void dbg_set_breakpoint(struct breakpoint bp);
 struct breakpoint dbg_get_breakpoint(void);
 
 // Clocks elapsed since the CPU last entered the running state (last
