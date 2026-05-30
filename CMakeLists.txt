@@ -209,6 +209,9 @@ set(X16_SOURCES
 
 if(WIN32)
     list(APPEND X16_SOURCES src/video_win32.c)
+    list(APPEND X16_SOURCES src/debugger_console_win32.c)
+else()
+    list(APPEND X16_SOURCES src/debugger_console_posix.c)
 endif()
 
 # --- Main Executable Target ---

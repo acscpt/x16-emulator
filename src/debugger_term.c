@@ -9,6 +9,7 @@
 // sequences are parsed and absorbed.
 
 #include "debugger_term.h"
+#include "debugger_console.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -16,20 +17,13 @@
 #include <string.h>
 #include <unistd.h>
 
-#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
-#include <termios.h>
-#endif
-
 // ---------------------------------------------------------------------------
-// Tty / termios state.
+// Tty state. Raw-mode setup and restoration live in the platform console
+// backend (debugger_console_*.c); this flag mirrors its verdict so the editor
+// and output helpers know whether the line editor is active.
 // ---------------------------------------------------------------------------
 
 static bool is_tty_mode = false;
-
-#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
-static struct termios saved_termios;
-static bool           termios_saved = false;
-#endif
 
 // ---------------------------------------------------------------------------
 // Line buffer + editor state machine.
@@ -201,7 +195,6 @@ static void history_down(void) {
 // ---------------------------------------------------------------------------
 
 int term_init(void) {
-	is_tty_mode = false;
 	line_len    = 0;
 	cursor_pos  = 0;
 	line_ready  = false;
@@ -209,43 +202,13 @@ int term_init(void) {
 	history_nav = -1;
 	saved_len   = 0;
 
-#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
-	if (!isatty(STDIN_FILENO)) {
-		return 0;
-	}
-	struct termios t;
-	if (tcgetattr(STDIN_FILENO, &t) != 0) {
-		return 0;
-	}
-	saved_termios = t;
-	termios_saved = true;
-
-	// Belt and braces: register the restore as an atexit handler so an
-	// abnormal exit (assert, signal default action, exit-on-error in a
-	// caller) does not leave the user's shell in noncanonical / no-echo.
-	(void)atexit(term_shutdown);
-
-	// Noncanonical, no-echo, no auto-translate. We do all line editing.
-	t.c_lflag &= ~(ICANON | ECHO | ECHOE | ECHOK | ECHONL);
-	t.c_iflag &= ~(ICRNL | INLCR);
-	t.c_cc[VMIN]  = 0;
-	t.c_cc[VTIME] = 0;
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &t) != 0) {
-		termios_saved = false;
-		return 0;
-	}
-	is_tty_mode = true;
-#endif
+	// The console backend has already probed stdin and (if interactive) put
+	// it into raw mode; mirror its verdict.
+	is_tty_mode = dbg_console_is_interactive();
 	return 0;
 }
 
 void term_shutdown(void) {
-#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
-	if (termios_saved) {
-		(void)tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
-		termios_saved = false;
-	}
-#endif
 	is_tty_mode = false;
 }
 

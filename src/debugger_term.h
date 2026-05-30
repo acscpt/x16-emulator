@@ -15,12 +15,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Probe stdin. If it is a tty, save the existing termios and switch to
-// noncanonical / no-echo. If it is not, do nothing and term_is_tty() will
-// return false. Returns 0 always; tty failures fall back to pipe semantics.
+// Initialise the editor state and adopt the console backend's verdict on
+// whether stdin is an interactive terminal (see dbg_console_init, which must
+// run first). Returns 0 always. term_is_tty() reflects the verdict.
 int term_init(void);
 
-// Restore the original termios. Safe to call multiple times.
+// Reset the editor state. The terminal itself is restored by the console
+// backend (dbg_console_restore). Safe to call multiple times.
 void term_shutdown(void);
 
 // True when term_init() determined that stdin is a tty and the line editor

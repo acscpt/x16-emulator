@@ -35,6 +35,7 @@ void debugger_stdio_shutdown(void) {}
 
 #include "debugger_core.h"
 #include "debugger_term.h"
+#include "debugger_console.h"
 #include "memory.h"
 #include "cpu/fake6502.h"
 #include "cpu/registers.h"
@@ -42,10 +43,6 @@ void debugger_stdio_shutdown(void) {}
 #include "git_rev.h"
 
 #include <ctype.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -1180,12 +1177,11 @@ static void dispatch_line(char *line) {
 // ---------------------------------------------------------------------------
 // Non-blocking stdin reader.
 //
-// Reads raw bytes from STDIN_FILENO into a private accumulator and extracts
-// complete lines from it. Using fgets here would be a trap: it pulls bytes
-// from the pipe into libc's stdin buffer in chunks, and poll() can't see
-// libc-buffered data -- so after one fgets, poll() falsely reports "no data"
-// while a queued line is still sitting in libc. Going through raw read()
-// keeps everything visible to poll().
+// Reads raw bytes (via the platform console backend) into a private
+// accumulator and extracts complete lines from it. Using fgets here would be
+// a trap: it pulls bytes into libc's stdin buffer in chunks that the backend's
+// readiness wait can't see, so a queued line could sit in libc unnoticed.
+// Going through the backend's raw read keeps everything visible.
 // ---------------------------------------------------------------------------
 
 #define LINE_ACCUM_SZ 8192
@@ -1194,70 +1190,45 @@ static char   line_accum[LINE_ACCUM_SZ];
 static size_t line_accum_len = 0;
 static bool   stdin_eof      = false;
 
-static void make_stdin_nonblocking(void) {
-	int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
-	if (flags >= 0) {
-		(void)fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
-	}
-}
-
 // Pull whatever is available right now into line_accum. Returns -1 on EOF.
 //
-// Two paths: in tty mode, read a byte at a time, feed it through the
-// debugger_term line editor (which echoes printable chars, handles
-// backspace and Enter, and absorbs escape sequences), and splice each
-// completed line into line_accum with a trailing '\n' so extract_line
-// picks it up unchanged. In pipe mode, read in bulk straight into
-// line_accum -- the protocol path the testbench and scripts depend on.
+// Two paths: in tty mode, feed each byte through the debugger_term line
+// editor (which echoes printable chars, handles backspace and Enter, and
+// absorbs escape sequences), and splice each completed line into line_accum
+// with a trailing '\n' so extract_line picks it up unchanged. In pipe mode,
+// read in bulk straight into line_accum -- the protocol path the testbench
+// and scripts depend on.
 static int drain_stdin(void) {
 	if (term_is_tty()) {
-		while (line_accum_len < LINE_ACCUM_SZ - 1) {
-			uint8_t b;
-			ssize_t n = read(STDIN_FILENO, &b, 1);
-			if (n == 0) {
-				// In noncanonical mode with VMIN=0/VTIME=0, a 0-byte
-				// return means "no data right now", not EOF. A tty in
-				// this mode does not deliver EOF through read() at all
-				// -- a real disconnect would surface via POLLHUP or
-				// SIGHUP, neither of which we treat as input here.
-				return 0;
-			}
-			if (n < 0) {
-				if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
-				stdin_eof = true;
-				return -1;
-			}
-			if (term_feed_byte(b)) {
-				char   tmp[LINE_ACCUM_SZ];
-				size_t len = term_take_line(tmp, sizeof(tmp));
-				if (line_accum_len + len + 1 >= LINE_ACCUM_SZ) {
-					// No room for the completed line + its '\n'; leave it
-					// in tmp lost rather than half-splice. In practice
-					// LINE_ACCUM_SZ is far larger than any plausible
-					// command.
-					continue;
+		for (;;) {
+			uint8_t buf[256];
+			int n = dbg_console_read(buf, sizeof(buf));
+			if (n < 0) { stdin_eof = true; return -1; }
+			if (n == 0) return 0;  // nothing available right now
+			for (int i = 0; i < n; i++) {
+				if (term_feed_byte(buf[i])) {
+					char   tmp[LINE_ACCUM_SZ];
+					size_t len = term_take_line(tmp, sizeof(tmp));
+					if (line_accum_len + len + 1 >= LINE_ACCUM_SZ) {
+						// No room for the completed line + its '\n'; drop it
+						// rather than half-splice. In practice LINE_ACCUM_SZ
+						// is far larger than any plausible command.
+						continue;
+					}
+					memcpy(line_accum + line_accum_len, tmp, len);
+					line_accum_len += len;
+					line_accum[line_accum_len++] = '\n';
 				}
-				memcpy(line_accum + line_accum_len, tmp, len);
-				line_accum_len += len;
-				line_accum[line_accum_len++] = '\n';
 			}
+			if (line_accum_len >= LINE_ACCUM_SZ - 1) return 0;
 		}
-		return 0;
 	}
 
 	while (line_accum_len < LINE_ACCUM_SZ - 1) {
-		ssize_t n = read(STDIN_FILENO,
-		                 line_accum + line_accum_len,
-		                 LINE_ACCUM_SZ - 1 - line_accum_len);
-		if (n == 0) {
-			stdin_eof = true;
-			return -1;
-		}
-		if (n < 0) {
-			if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
-			stdin_eof = true;
-			return -1;
-		}
+		int n = dbg_console_read(line_accum + line_accum_len,
+		                         LINE_ACCUM_SZ - 1 - line_accum_len);
+		if (n < 0) { stdin_eof = true; return -1; }
+		if (n == 0) return 0;  // nothing available right now
 		line_accum_len += (size_t)n;
 	}
 	return 0;
@@ -1332,8 +1303,7 @@ static int stdio_tick(void) {
 	// tick processes / exits without waiting.
 	if (dbg_get_mode() == DMODE_STOP) {
 		if (line_accum_len == 0 && !stdin_eof) {
-			struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
-			(void)poll(&pfd, 1, 100);
+			dbg_console_wait_readable(100);
 		}
 		return 1; // hold; CPU does not step
 	}
@@ -1350,39 +1320,20 @@ static const dbg_frontend_t stdio_frontend = {
 	.on_resume = stdio_on_resume,
 };
 
-// SIGINT / SIGTERM / SIGHUP: restore the user's termios, then re-raise
-// the signal with default disposition so the process exits from the
-// signal normally (atexit handlers do not run on signal paths). term_init
-// put the tty in raw mode, so without this Ctrl-C would leave the shell
-// noncanonical / no-echo. Ctrl-C just exits -- it does not control the
-// emulator; to break into the debugger while the CPU runs, type `brk`.
-// Only async-signal-safe calls are used: tcsetattr (via term_shutdown),
-// signal, raise.
-static void signal_exit_handler(int sig) {
-	term_shutdown();
-	signal(sig, SIG_DFL);
-	raise(sig);
-}
-
-static void install_signal_handlers(void) {
-	(void)signal(SIGINT,  signal_exit_handler);
-	(void)signal(SIGTERM, signal_exit_handler);
-	(void)signal(SIGHUP,  signal_exit_handler);
-}
-
 void debugger_stdio_init(void) {
 	// Line-buffered stdout so command responses flush at '\n' without
 	// requiring an explicit fflush after every byte.
 	setvbuf(stdout, NULL, _IOLBF, 0);
-	make_stdin_nonblocking();
-	term_init();
-	install_signal_handlers();
+	dbg_console_init();   // non-blocking stdin; raw mode if interactive
+	term_init();          // editor state; adopts the console's tty verdict
+	dbg_console_install_signal_handlers();
 	dbg_register_frontend(&stdio_frontend);
 	emit_banner();
 	emit_prompt();  // initial prompt; subsequent prompts emitted by stdio_tick
 }
 
 void debugger_stdio_shutdown(void) {
+	dbg_console_restore();
 	term_shutdown();
 }
 
