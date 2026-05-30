@@ -1,0 +1,50 @@
+# Changelog
+
+A list of changes in this fork, recorded incrementally in the
+[Keep a Changelog](https://keepachangelog.com/) format. It complements
+[`RELEASES.md`](./RELEASES.md), the upstream log organized per named release
+and updated en masse.
+
+Newest entries first.
+
+## [Unreleased]
+
+### Added
+
+- **`-debugstdio`: a headless, scriptable REPL frontend for the debugger.**
+  Runs the debugger over stdin/stdout instead of the SDL overlay, so the
+  emulator can be driven by a script, a test harness, or a terminal user.
+  Mutually exclusive with `-debug`.
+  - Line-based wire protocol: `RDY` / `ERR <msg>` command replies and
+    asynchronous `* BRK <reason> <bank> <addr>` / `* RES` events, with a
+    `x16db > ` prompt resynced to emulator state on each turn.
+  - Command parity with the SDL F12 debugger: register/memory/VRAM/stack/
+    zero-page inspection and edits, disassembly, fill, find, single-step,
+    step-over, continue, reset, and bail.
+  - Stateful view cursor: `m` / `d` / `v` dumps with `+`/`-` nudges, a
+    pinned view bank (`b view`), and an optional status header (`hdr` / `st`).
+  - Up to 16 simultaneous breakpoints — `sbp` (add), `cbp <bank> <addr>` /
+    `cbp *` (clear one / all), `lbp` (list), and `tb` (toggle at the cursor).
+  - Interactive terminal line editor when stdin is a TTY: own echo,
+    backspace, `Enter`, up/down command history, left/right cursor movement,
+    `Delete`, and mid-line editing. Asynchronous events redraw the prompt
+    without clobbering in-progress input. `Ctrl-C` exits cleanly and restores
+    the terminal.
+  - User guide and command reference: [`docs/debug_repl.md`](./docs/debug_repl.md)
+    and [`docs/debug_repl_commands.md`](./docs/debug_repl_commands.md).
+  - Python test harnesses under `testbench/`: `x16dbg_smoke.py` (the pipe
+    protocol) and `x16dbg_pty.py` (the TTY line-editor and signal paths).
+
+### Changed
+
+- Debugger internals refactored into an SDL-free core
+  (`debugger_core.{c,h}`) behind a frontend vtable (`dbg_frontend_t`), so the
+  SDL and stdio frontends share one state machine, breakpoint table, and
+  view-cursor state.
+- `-debugstdio` suppresses `-echo` / `-trace` / `-log`, which would otherwise
+  collide with the REPL protocol on stdout.
+- `video`: added `video_is_alive()`; the debugger gates `video_update()` on it.
+
+### Tooling
+
+- markdownlint configuration (`.markdownlint.jsonc`).
