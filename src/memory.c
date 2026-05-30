@@ -14,6 +14,7 @@
 #include "video.h"
 #include "ymglue.h"
 #include "cpu/fake6502.h"
+#include "debugger_core.h"
 #include "wav_recorder.h"
 #include "audio.h"
 #include "cartridge.h"
@@ -270,6 +271,11 @@ void
 write6502(uint16_t address, uint8_t bank, uint8_t value)
 {
 	if (!is_gen2) bank = 0;
+
+	// Memory watchpoints: cheap guard (one load + branch) when none armed.
+	if (dbg_watch_write_armed) {
+		dbg_watch_on_write(address, value);
+	}
 
 	if(reportUsageStatisticsFilename!=NULL) {
 		if (bank != 0 || address < 0xa000) {

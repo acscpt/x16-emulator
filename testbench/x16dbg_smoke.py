@@ -411,6 +411,60 @@ def main():
 		check("after rst, still in STOP", any("mode=stop" in l for l in data), data)
 
 		print()
+		print("--- watchpoints ---")
+		d.cmd("brk")
+		d.cmd("cwp *")
+		data, _ = d.cmd("swp 00 0070")
+		check("swp echoes the assigned id", data == ["wp 0 set"], data)
+		data, _ = d.cmd("lwp")
+		check("lwp lists the watchpoint", data == ["0: w 00:0070 hits=0"], data)
+		d.cmd("swp 00 0080 008f")
+		data, _ = d.cmd("lwp")
+		check("second watchpoint gets id 1, range shown",
+		      data == ["0: w 00:0070 hits=0", "1: w 00:0080-008f hits=0"], data)
+		d.cmd("cwp 0")
+		data, _ = d.cmd("lwp")
+		check("cwp frees a slot without renumbering the rest",
+		      data == ["1: w 00:0080-008f hits=0"], data)
+		d.cmd("wp 1 off")
+		data, _ = d.cmd("lwp")
+		check("wp off marks it disabled", data == ["1: w 00:0080-008f hits=0 off"], data)
+		d.cmd("wp 1 on")
+		try:
+			d.cmd("swp r 00 0070")
+			check("read watchpoint rejected in write-only build", False, "no ERR")
+		except AssertionError:
+			check("read watchpoint rejected in write-only build", True)
+		try:
+			d.cmd("swp 00 0070 if a==5")
+			check("watchpoint condition rejected for now", False, "no ERR")
+		except AssertionError:
+			check("watchpoint condition rejected for now", True)
+		try:
+			d.cmd("cwp 9")
+			check("cwp on a missing watchpoint errors", False, "no ERR")
+		except AssertionError:
+			check("cwp on a missing watchpoint errors", True)
+		d.cmd("cwp *")
+		data, _ = d.cmd("lwp")
+		check("cwp * clears every watchpoint", data == [], data)
+		# Fire: inject a routine that writes a known ZP location, point the
+		# CPU at it, and run. Deterministic regardless of machine state or
+		# host speed -- the watched write happens within two instructions.
+		d.cmd("wmm 00 0500 a9 aa 85 70")   # LDA #$aa ; STA $70
+		d.cmd("srg pc 0500")
+		d.cmd("swp 00 0070")
+		d.cmd("cnt")
+		_, events = d.wait_prompt(timeout=5.0)
+		check("write watchpoint fires with * WP (id, addr, value, pc)",
+		      any(e.startswith("* WP 0 w 00:0070=aa") and "pc=00:0502" in e for e in events),
+		      events)
+		data, _ = d.cmd("lwp")
+		check("watchpoint hit count incremented",
+		      data == ["0: w 00:0070 hits=1"], data)
+		d.cmd("cwp *")
+
+		print()
 		print("--- SDL-equivalent stateful commands ---")
 		# `m a300` sets the data cursor; bare `m` re-dumps from it.
 		data, _ = d.cmd("m a300")

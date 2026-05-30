@@ -58,6 +58,41 @@ static int find_user_bp(int pc, uint8_t bank, int x16Bank) {
 	return -1;
 }
 
+// Watchpoints. Slot index is the id; entries persist in their slot until
+// removed. dbg_watch_write_armed is the count of enabled write watchpoints,
+// read directly by memory.c's write6502 as a hot-path guard.
+static struct watchpoint watch_table[DBG_MAX_WATCHPOINTS];
+int dbg_watch_write_armed = 0;
+
+// A watchpoint hit latched by the write hook during step6502, surfaced by
+// the next dbg_tick(). have_watch_hit keeps the last hit readable by the
+// frontend after the stop (for the `* WP` event).
+static bool            watch_pending  = false;
+static dbg_watch_hit_t pending_hit;
+static dbg_watch_hit_t last_hit;
+static bool            have_watch_hit = false;
+
+// Set around debugger pokes (dbg_write_mem / dbg_fill_mem) so their writes,
+// which also go through write6502, do not trip watchpoints. Only genuine
+// CPU writes should fire them.
+static bool            watch_suppress = false;
+
+// PC of the instruction about to execute, snapshotted before each step so
+// the write hook can report which instruction made the access (regs.pc has
+// already advanced by the time write6502 runs).
+static uint16_t cur_instr_pc   = 0;
+static uint8_t  cur_instr_bank = 0;
+
+static void recompute_watch_armed(void) {
+	int n = 0;
+	for (int i = 0; i < DBG_MAX_WATCHPOINTS; i++) {
+		if (watch_table[i].in_use && watch_table[i].enabled && watch_table[i].on_write) {
+			n++;
+		}
+	}
+	dbg_watch_write_armed = n;
+}
+
 // View-cursor state (see debugger_core.h "View-cursor state" section).
 // view_pc == -1 is the lazy-init sentinel; the first access populates
 // from regs.pc, matching the pre-refactor SDL `if (currentPC < 0)
@@ -119,6 +154,16 @@ static void enter_stop(dbg_break_reason_t reason) {
 // ----- Public API -----
 
 dbg_tick_t dbg_tick(void) {
+	// A watchpoint latched during the previous step. Stop now (the writing
+	// instruction has completed; regs.pc is the next instruction).
+	if (watch_pending && currentMode != DMODE_STOP) {
+		watch_pending  = false;
+		last_hit       = pending_hit;
+		have_watch_hit = true;
+		enter_stop(DBG_BREAK_WATCHPOINT);
+		return DBG_TICK_HOLD;
+	}
+
 	// Step completion: if regs.pc moved past where we started stepping,
 	// the step has run. Matches the pre-refactor "did the CPU move?" check
 	// in DEBUGGetCurrentStatus.
@@ -153,6 +198,11 @@ dbg_tick_t dbg_tick(void) {
 	if (currentMode == DMODE_STOP) {
 		return DBG_TICK_HOLD;
 	}
+
+	// About to run one instruction; record its start PC so the write hook
+	// can attribute any watched write to the right instruction.
+	cur_instr_pc   = regs.pc;
+	cur_instr_bank = regs.k;
 	return DBG_TICK_RUN;
 }
 
@@ -271,6 +321,106 @@ struct breakpoint dbg_get_breakpoint(void) {
 
 uint32_t dbg_clocks_since_resume(void) {
 	return clockticks6502 - debugCPUClocks;
+}
+
+// ----- Watchpoints -----
+
+int dbg_watch_add(int x16Bank, uint16_t start, uint16_t end, bool on_read, bool on_write) {
+	if ((!on_read && !on_write) || end < start) {
+		return -1;
+	}
+	for (int i = 0; i < DBG_MAX_WATCHPOINTS; i++) {
+		if (!watch_table[i].in_use) {
+			watch_table[i].in_use   = true;
+			watch_table[i].enabled  = true;
+			watch_table[i].on_read  = on_read;
+			watch_table[i].on_write = on_write;
+			watch_table[i].start    = start;
+			watch_table[i].end      = end;
+			watch_table[i].x16Bank  = x16Bank;
+			watch_table[i].hits     = 0;
+			recompute_watch_armed();
+			return i;
+		}
+	}
+	return -1; // table full
+}
+
+bool dbg_watch_remove(int id) {
+	if (id < 0 || id >= DBG_MAX_WATCHPOINTS || !watch_table[id].in_use) {
+		return false;
+	}
+	watch_table[id].in_use = false;
+	recompute_watch_armed();
+	return true;
+}
+
+void dbg_watch_clear_all(void) {
+	for (int i = 0; i < DBG_MAX_WATCHPOINTS; i++) {
+		watch_table[i].in_use = false;
+	}
+	dbg_watch_write_armed = 0;
+}
+
+bool dbg_watch_set_enabled(int id, bool enabled) {
+	if (id < 0 || id >= DBG_MAX_WATCHPOINTS || !watch_table[id].in_use) {
+		return false;
+	}
+	watch_table[id].enabled = enabled;
+	recompute_watch_armed();
+	return true;
+}
+
+int dbg_watch_count(void) {
+	int n = 0;
+	for (int i = 0; i < DBG_MAX_WATCHPOINTS; i++) {
+		if (watch_table[i].in_use) n++;
+	}
+	return n;
+}
+
+bool dbg_watch_get(int id, struct watchpoint *out) {
+	if (id < 0 || id >= DBG_MAX_WATCHPOINTS || !watch_table[id].in_use) {
+		return false;
+	}
+	if (out) *out = watch_table[id];
+	return true;
+}
+
+bool dbg_get_watch_hit(dbg_watch_hit_t *out) {
+	if (!have_watch_hit) {
+		return false;
+	}
+	if (out) *out = last_hit;
+	return true;
+}
+
+void dbg_watch_on_write(uint16_t addr, uint8_t value) {
+	// Ignore debugger pokes (they route through write6502 too) and ignore
+	// further writes once a hit is pending; the first per instruction wins.
+	if (watch_suppress || watch_pending) {
+		return;
+	}
+	int eff = dbg_x16_bank(addr, regs.k);
+	for (int i = 0; i < DBG_MAX_WATCHPOINTS; i++) {
+		struct watchpoint *w = &watch_table[i];
+		if (!w->in_use || !w->enabled || !w->on_write) {
+			continue;
+		}
+		if (addr < w->start || addr > w->end || w->x16Bank != eff) {
+			continue;
+		}
+		w->hits++;
+		pending_hit.id       = i;
+		pending_hit.is_write = true;
+		pending_hit.x16Bank  = eff;
+		pending_hit.addr     = addr;
+		pending_hit.value    = value;
+		pending_hit.pc       = cur_instr_pc;
+		pending_hit.pc_bank  = cur_instr_bank;
+		watch_pending = true;
+		return;
+	}
 }
 
 // ----- View-cursor accessors -----
@@ -408,13 +558,17 @@ uint8_t dbg_read_mem(uint8_t bank, uint16_t addr, int16_t x16Bank) {
 }
 
 void dbg_write_mem(uint8_t bank, uint16_t addr, uint8_t value) {
+	watch_suppress = true;
 	write6502(addr, bank, value);
+	watch_suppress = false;
 }
 
 void dbg_fill_mem(uint8_t bank, uint16_t addr, uint8_t value, uint16_t len) {
+	watch_suppress = true;
 	for (uint16_t i = 0; i < len; i++) {
 		write6502((uint16_t)(addr + i), bank, value);
 	}
+	watch_suppress = false;
 }
 
 void dbg_fill_mem_buffer(uint32_t addr, int x16bank, uint8_t value, uint32_t count, int incr) {

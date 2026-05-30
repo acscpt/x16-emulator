@@ -40,6 +40,7 @@ typedef enum {
 	DBG_BREAK_BREAKPOINT,     // user-set breakpoint hit
 	DBG_BREAK_STP_OPCODE,     // 6502 STP ($DB) executed
 	DBG_BREAK_STEP_COMPLETE,  // single-step or step-over finished
+	DBG_BREAK_WATCHPOINT,     // memory watchpoint hit
 } dbg_break_reason_t;
 
 // What the main loop should do this iteration.
@@ -124,6 +125,79 @@ struct breakpoint dbg_get_breakpoint(void);
 // dbg_continue / dbg_step / dbg_step_over). Used by the SDL render for
 // the "clocks elapsed" panel display.
 uint32_t dbg_clocks_since_resume(void);
+
+// =========================================================================
+// Watchpoints (data breakpoints)
+// =========================================================================
+//
+// Stop the CPU when the running program accesses a memory address or range.
+// Currently write watchpoints only; read watchpoints arrive in a later
+// build. The check is hooked into the CPU write path (memory.c write6502)
+// and gated by dbg_watch_write_armed so it costs nothing when none are set.
+
+#define DBG_MAX_WATCHPOINTS 16
+
+// A memory watchpoint over the inclusive range [start, end]. x16Bank is the
+// X16 RAM/ROM bank for an address in the $A000-$FFFF window, or -1 for the
+// unbanked region ($0000-$9FFF), where the bank-select registers are not
+// consulted. Ids are slot-stable: the slot index is the id, assigned at
+// creation and unchanged until the watchpoint is removed.
+struct watchpoint {
+	bool     in_use;
+	bool     enabled;
+	bool     on_read;
+	bool     on_write;
+	uint16_t start;
+	uint16_t end;
+	int      x16Bank;
+	uint64_t hits;
+};
+
+// Add a watchpoint. Returns the slot id (0..DBG_MAX_WATCHPOINTS-1) on
+// success, or -1 if the table is full or the request is invalid (no access
+// type, or end < start). The id is stable for the watchpoint's lifetime.
+int  dbg_watch_add(int x16Bank, uint16_t start, uint16_t end, bool on_read, bool on_write);
+
+// Remove the watchpoint in slot id. Returns true if one was present.
+bool dbg_watch_remove(int id);
+
+// Remove every watchpoint.
+void dbg_watch_clear_all(void);
+
+// Enable or disable the watchpoint in slot id without deleting it. Returns
+// true if the slot is in use.
+bool dbg_watch_set_enabled(int id, bool enabled);
+
+// Number of watchpoints in use (enabled or not).
+int  dbg_watch_count(void);
+
+// Read the watchpoint in slot id into *out. Returns true if the slot is in
+// use, false otherwise.
+bool dbg_watch_get(int id, struct watchpoint *out);
+
+// Details of the most recent watchpoint hit, valid after a stop with reason
+// DBG_BREAK_WATCHPOINT. pc/pc_bank identify the instruction that made the
+// access. Returns false if there is no recorded hit.
+typedef struct dbg_watch_hit {
+	int      id;
+	bool     is_write;
+	int      x16Bank;
+	uint16_t addr;
+	uint8_t  value;
+	uint16_t pc;
+	uint8_t  pc_bank;
+} dbg_watch_hit_t;
+
+bool dbg_get_watch_hit(dbg_watch_hit_t *out);
+
+// CPU write-path hook (memory.c write6502). Call only when
+// dbg_watch_write_armed is nonzero. On a match it latches a pending stop
+// that the next dbg_tick() surfaces; it does not stop mid-instruction.
+void dbg_watch_on_write(uint16_t addr, uint8_t value);
+
+// Fast-path guard: count of enabled write watchpoints. memory.c reads this
+// directly so the hot path is one load + branch when nothing is armed.
+extern int dbg_watch_write_armed;
 
 // =========================================================================
 // State snapshots

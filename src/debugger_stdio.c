@@ -97,6 +97,16 @@ static void flush_events(void) {
 // ---------------------------------------------------------------------------
 
 static void stdio_on_break(dbg_break_reason_t r, uint8_t bank, uint16_t pc) {
+	if (r == DBG_BREAK_WATCHPOINT) {
+		dbg_watch_hit_t h;
+		if (dbg_get_watch_hit(&h)) {
+			int abank = (h.x16Bank >= 0) ? h.x16Bank : 0;
+			enqueue_event("* WP %d %s %02x:%04x=%02x pc=%02x:%04x",
+			              h.id, h.is_write ? "w" : "r",
+			              abank, h.addr, h.value, h.pc_bank, h.pc);
+			return;
+		}
+	}
 	const char *reason;
 	switch (r) {
 		case DBG_BREAK_USER:          reason = "USER";       break;
@@ -389,6 +399,121 @@ static void cmd_lbp(int argc, char **argv) {
 	for (int i = 0; i < n; i++) {
 		struct breakpoint bp = dbg_breakpoint_get(i);
 		printf("%02x: %04x\n", bp.bank, (uint16_t)bp.pc);
+	}
+	rdy();
+}
+
+// ---------------------------------------------------------------------------
+// Watchpoints. Phase A: write watchpoints only; read (`r`/`rw`) and
+// conditions (`if`) arrive in later builds, at which point the access
+// default becomes `rw`.
+// ---------------------------------------------------------------------------
+
+// Parse a non-negative decimal integer (used for watchpoint ids).
+static bool parse_dec(const char *s, int *out) {
+	if (!s || !*s) return false;
+	char *end;
+	long v = strtol(s, &end, 10);
+	if (*end != '\0' || v < 0) return false;
+	*out = (int)v;
+	return true;
+}
+
+static void cmd_swp(int argc, char **argv) {
+	int  i        = 0;
+	bool on_read  = false;
+	bool on_write = true;  // Phase A default; becomes rw once reads land
+	if (argc > 0 && (!strcmp(argv[0], "r") || !strcmp(argv[0], "w") || !strcmp(argv[0], "rw"))) {
+		on_read  = (argv[0][0] == 'r');
+		on_write = (strchr(argv[0], 'w') != NULL);
+		i = 1;
+	}
+	if (on_read) {
+		err_msg("only write watchpoints are supported in this build");
+		return;
+	}
+	for (int j = i; j < argc; j++) {
+		if (!strcmp(argv[j], "if")) {
+			err_msg("watchpoint conditions (if) arrive in a later build");
+			return;
+		}
+	}
+	uint32_t bank, addr, end;
+	if (argc - i < 2 || argc - i > 3
+	    || !parse_hex(argv[i], &bank, 0xff)
+	    || !parse_hex(argv[i + 1], &addr, 0xffff)) {
+		err_msg("usage: swp [w] <bank> <addr> [end]");
+		return;
+	}
+	end = addr;
+	if (argc - i == 3 && !parse_hex(argv[i + 2], &end, 0xffff)) {
+		err_msg("usage: swp [w] <bank> <addr> [end]");
+		return;
+	}
+	if (end < addr) {
+		err_msg("end < addr");
+		return;
+	}
+	// Below the banked window the address is unbanked (x16Bank -1); the
+	// bank argument is conventionally 00 there.
+	int x16Bank = (addr >= 0xA000) ? (int)bank : -1;
+	int id = dbg_watch_add(x16Bank, (uint16_t)addr, (uint16_t)end, on_read, on_write);
+	if (id < 0) {
+		err_msg("watchpoint table full");
+		return;
+	}
+	printf("wp %d set\n", id);
+	rdy();
+}
+
+static void cmd_lwp(int argc, char **argv) {
+	(void)argv;
+	if (argc != 0) { err_msg("lwp takes no args"); return; }
+	for (int i = 0; i < DBG_MAX_WATCHPOINTS; i++) {
+		struct watchpoint w;
+		if (!dbg_watch_get(i, &w)) continue;
+		int abank = (w.x16Bank >= 0) ? w.x16Bank : 0;
+		const char *acc = (w.on_read && w.on_write) ? "rw" : (w.on_read ? "r" : "w");
+		printf("%d: %s %02x:%04x", i, acc, abank, w.start);
+		if (w.end != w.start) printf("-%04x", w.end);
+		printf(" hits=%llu", (unsigned long long)w.hits);
+		if (!w.enabled) printf(" off");
+		printf("\n");
+	}
+	rdy();
+}
+
+static void cmd_cwp(int argc, char **argv) {
+	if (argc == 1 && !strcmp(argv[0], "*")) {
+		dbg_watch_clear_all();
+		rdy();
+		return;
+	}
+	int id;
+	if (argc != 1 || !parse_dec(argv[0], &id)) {
+		err_msg("usage: cwp <id> | cwp *");
+		return;
+	}
+	if (!dbg_watch_remove(id)) {
+		err_msg("no such watchpoint");
+		return;
+	}
+	rdy();
+}
+
+static void cmd_wp(int argc, char **argv) {
+	int  id;
+	bool on;
+	if (argc != 2 || !parse_dec(argv[0], &id)) {
+		err_msg("usage: wp <id> on|off");
+		return;
+	}
+	if (!strcmp(argv[1], "on"))       on = true;
+	else if (!strcmp(argv[1], "off")) on = false;
+	else { err_msg("usage: wp <id> on|off"); return; }
+	if (!dbg_watch_set_enabled(id, on)) {
+		err_msg("no such watchpoint");
+		return;
 	}
 	rdy();
 }
@@ -1046,6 +1171,11 @@ static void cmd_hlp(int argc, char **argv) {
 	puts("  sbp <bank> <addr>                   add a user breakpoint");
 	puts("  cbp <bank> <addr> | cbp *           clear a breakpoint, or all");
 	puts("  lbp                                 list breakpoints");
+	puts("watchpoints (up to 16, write-only for now):");
+	puts("  swp [w] <bank> <addr> [end]         add a write watchpoint");
+	puts("  cwp <id> | cwp *                    clear a watchpoint, or all");
+	puts("  lwp                                 list watchpoints");
+	puts("  wp <id> on|off                      enable/disable a watchpoint");
 	puts("memory (explicit-args, stateless):");
 	puts("  mem <bank> <addr> <count>           read memory (count <= 0x1000)");
 	puts("  wmm <bank> <addr> <hex>...          write memory bytes");
@@ -1105,6 +1235,11 @@ static const struct {
 	{"sbp",  cmd_sbp},
 	{"cbp",  cmd_cbp},
 	{"lbp",  cmd_lbp},
+	// watchpoints (data breakpoints)
+	{"swp",  cmd_swp},
+	{"cwp",  cmd_cwp},
+	{"lwp",  cmd_lwp},
+	{"wp",   cmd_wp},
 	// registers (stateless)
 	{"reg",  cmd_reg},
 	{"srg",  cmd_srg},
