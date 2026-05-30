@@ -216,18 +216,21 @@ static void emit_header_view(void) {
 	       mode == DBG_VIEW_RAM ? "RAM" : "VRAM");
 }
 
-static void emit_header_bp(struct breakpoint bp) {
-	printf("4: [ bp=%02x:%04x ]\n", bp.bank, (uint16_t)bp.pc);
+static void emit_header_bp(void) {
+	int n = dbg_breakpoint_count();
+	fputs("4: [ bp=", stdout);
+	for (int i = 0; i < n; i++) {
+		struct breakpoint bp = dbg_breakpoint_get(i);
+		printf("%s%02x:%04x", i ? " " : "", bp.bank, (uint16_t)bp.pc);
+	}
+	fputs(" ]\n", stdout);
 }
 
 static void emit_header(void) {
 	if (hdr_cpu_on)  emit_header_cpu();
 	if (hdr_aux_on)  emit_header_aux();
 	if (hdr_view_on) emit_header_view();
-	if (hdr_bp_on) {
-		struct breakpoint bp = dbg_get_breakpoint();
-		if (bp.pc >= 0) emit_header_bp(bp);
-	}
+	if (hdr_bp_on && dbg_breakpoint_count() > 0) emit_header_bp();
 }
 
 // Per-input prompt. The header (1–4 bracketed lines) precedes it. The
@@ -351,24 +354,40 @@ static void cmd_sbp(int argc, char **argv) {
 		err_msg("usage: sbp <bank> <addr>");
 		return;
 	}
-	// Note: single-breakpoint semantics in this phase (core supports one BP).
-	// Setting a new sbp overwrites any existing one. Multi-BP support arrives
-	// when the core API grows.
 	struct breakpoint bp = { .pc = (int)addr, .bank = (uint8_t)bank, .x16Bank = -1 };
-	dbg_set_breakpoint(bp);
+	if (!dbg_breakpoint_add(bp)) {
+		err_msg("breakpoint table full");
+		return;
+	}
 	rdy();
 }
 
 static void cmd_cbp(int argc, char **argv) {
-	uint32_t bank, addr;
-	if (argc != 2 || !parse_hex(argv[0], &bank, 0xff) || !parse_hex(argv[1], &addr, 0xffff)) {
-		err_msg("usage: cbp <bank> <addr>");
+	// `cbp *` clears every breakpoint.
+	if (argc == 1 && !strcmp(argv[0], "*")) {
+		dbg_breakpoint_clear_all();
+		rdy();
 		return;
 	}
-	struct breakpoint bp = dbg_get_breakpoint();
-	if (bp.pc == (int)addr && bp.bank == (uint8_t)bank) {
-		struct breakpoint clear = { .pc = -1, .bank = 0, .x16Bank = -1 };
-		dbg_set_breakpoint(clear);
+	uint32_t bank, addr;
+	if (argc != 2 || !parse_hex(argv[0], &bank, 0xff) || !parse_hex(argv[1], &addr, 0xffff)) {
+		err_msg("usage: cbp <bank> <addr> | cbp *");
+		return;
+	}
+	// Remove every breakpoint at this bank:addr (an address may carry more
+	// than one entry when set with different x16 banks). Iterate by index,
+	// removing matches; the table compacts so re-scan from the same index.
+	bool removed = false;
+	for (int i = 0; i < dbg_breakpoint_count();) {
+		struct breakpoint bp = dbg_breakpoint_get(i);
+		if (bp.pc == (int)addr && bp.bank == (uint8_t)bank) {
+			dbg_breakpoint_remove(bp);
+			removed = true;
+		} else {
+			i++;
+		}
+	}
+	if (removed) {
 		rdy();
 	} else {
 		err_msg("no such breakpoint");
@@ -378,9 +397,10 @@ static void cmd_cbp(int argc, char **argv) {
 static void cmd_lbp(int argc, char **argv) {
 	(void)argv;
 	if (argc != 0) { err_msg("lbp takes no args"); return; }
-	struct breakpoint bp = dbg_get_breakpoint();
-	if (bp.pc >= 0) {
-		printf("%02x %04x\n", bp.bank, (uint16_t)bp.pc);
+	int n = dbg_breakpoint_count();
+	for (int i = 0; i < n; i++) {
+		struct breakpoint bp = dbg_breakpoint_get(i);
+		printf("%02x: %04x\n", bp.bank, (uint16_t)bp.pc);
 	}
 	rdy();
 }
@@ -924,15 +944,14 @@ static void cmd_tb(int argc, char **argv) {
 	uint16_t pc;
 	int      x16bank;
 	dbg_get_view_pc(&bank, &pc, &x16bank);
-	struct breakpoint bp = dbg_get_breakpoint();
-	if (bp.pc == (int)pc && bp.bank == bank && bp.x16Bank == x16bank) {
-		struct breakpoint clear = { .pc = -1, .bank = 0, .x16Bank = -1 };
-		dbg_set_breakpoint(clear);
+	struct breakpoint bp = { .pc = (int)pc, .bank = bank, .x16Bank = x16bank };
+	if (dbg_breakpoint_remove(bp)) {
 		printf("* BP CLEAR %02x:%04x\n", bank, pc);
-	} else {
-		struct breakpoint set = { .pc = (int)pc, .bank = bank, .x16Bank = x16bank };
-		dbg_set_breakpoint(set);
+	} else if (dbg_breakpoint_add(bp)) {
 		printf("* BP SET %02x:%04x\n", bank, pc);
+	} else {
+		err_msg("breakpoint table full");
+		return;
 	}
 	rdy();
 }
@@ -1000,9 +1019,15 @@ static void cmd_st(int argc, char **argv) {
 	printf("view_mode %s\n", vmode == DBG_VIEW_RAM ? "RAM" : "VRAM");
 	printf("regs.pc   %02x:%04x\n", r.k, r.pc);
 	printf("clk       %u\n", dbg_clocks_since_resume());
-	struct breakpoint bp = dbg_get_breakpoint();
-	if (bp.pc >= 0) printf("bp        %02x:%04x  x16bank=%d\n", bp.bank, (uint16_t)bp.pc, bp.x16Bank);
-	else            printf("bp        (none)\n");
+	int nbp = dbg_breakpoint_count();
+	if (nbp == 0) {
+		printf("bp        (none)\n");
+	} else {
+		for (int i = 0; i < nbp; i++) {
+			struct breakpoint bp = dbg_breakpoint_get(i);
+			printf("bp        %02x:%04x  x16bank=%d\n", bp.bank, (uint16_t)bp.pc, bp.x16Bank);
+		}
+	}
 	rdy();
 }
 
@@ -1029,9 +1054,9 @@ static void cmd_hlp(int argc, char **argv) {
 	puts("  f <addr> <val> [<count>] [<incr>]        fill RAM or VRAM (bypasses I/O)");
 	puts("  home                                     view_pc := regs.pc; dump disasm");
 	puts("  tb                                       toggle breakpoint at view_pc");
-	puts("breakpoints (single BP, explicit-args):");
-	puts("  sbp <bank> <addr>                   set user breakpoint");
-	puts("  cbp <bank> <addr>                   clear user breakpoint");
+	puts("breakpoints (up to 16, explicit-args):");
+	puts("  sbp <bank> <addr>                   add a user breakpoint");
+	puts("  cbp <bank> <addr> | cbp *           clear a breakpoint, or all");
 	puts("  lbp                                 list breakpoints");
 	puts("memory (explicit-args, stateless):");
 	puts("  mem <bank> <addr> <count>           read memory (count <= 0x1000)");
