@@ -43,4 +43,9 @@ size_t term_take_line(char *out, size_t outsz);
 // in-progress input is restored. No-op in pipe mode.
 void term_repaint(const char *prompt);
 
+// Erase the current terminal line and place the cursor at column 0.
+// Used as the first step of the async-event redraw cycle. No-op in
+// pipe mode.
+void term_clear_line(void);
+
 #endif

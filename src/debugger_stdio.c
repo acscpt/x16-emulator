@@ -45,6 +45,7 @@ void debugger_stdio_shutdown(void) {}
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -67,6 +68,12 @@ extern struct regs regs;
 static char event_buf[EVENT_BUF_LINES][EVENT_BUF_LINE_SZ];
 static int  event_count = 0;
 
+// True when the most recent thing emitted on stdout was a prompt and no
+// other output has happened since. Used by flush_events to decide whether
+// async event lines need to be wrapped in a clear-line / redraw cycle so
+// they do not interleave with the user's in-progress input.
+static bool at_prompt = false;
+
 static void enqueue_event(const char *fmt, ...) {
 	if (event_count >= EVENT_BUF_LINES) {
 		return; // drop silently; ring is small but events are rare
@@ -79,6 +86,16 @@ static void enqueue_event(const char *fmt, ...) {
 }
 
 static void flush_events(void) {
+	if (event_count == 0) return;
+
+	// An async event (BRK / RES) may arrive while the user is sitting at a
+	// prompt, possibly mid-input. Erase the prompt line first so the event
+	// does not interleave with the in-progress input; the end-of-tick
+	// emit_prompt re-draws the prompt and term_repaint restores the input.
+	if (at_prompt && term_is_tty()) {
+		term_clear_line();
+		at_prompt = false;
+	}
 	for (int i = 0; i < event_count; i++) {
 		fputs(event_buf[i], stdout);
 		fputc('\n', stdout);
@@ -221,7 +238,13 @@ static void emit_header(void) {
 static void emit_prompt(void) {
 	emit_header();
 	fputs("\nx16db > ", stdout);
+	// Flush the prompt prefix before term_repaint, which writes the
+	// in-progress line buffer via a raw write() that bypasses stdio's
+	// buffer; flushing first keeps the prompt and the restored input in
+	// order. With an empty buffer term_repaint is a no-op.
 	fflush(stdout);
+	term_repaint("");
+	at_prompt = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1104,6 +1127,7 @@ static const struct {
 };
 
 static void dispatch_line(char *line) {
+	at_prompt = false;
 	// Strip trailing CR/LF.
 	size_t len = strlen(line);
 	while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
@@ -1301,12 +1325,33 @@ static const dbg_frontend_t stdio_frontend = {
 	.on_resume = stdio_on_resume,
 };
 
+// SIGINT / SIGTERM / SIGHUP: restore the user's termios, then re-raise
+// the signal with default disposition so the process exits from the
+// signal normally (atexit handlers do not run on signal paths). term_init
+// put the tty in raw mode, so without this Ctrl-C would leave the shell
+// noncanonical / no-echo. Ctrl-C just exits -- it does not control the
+// emulator; to break into the debugger while the CPU runs, type `brk`.
+// Only async-signal-safe calls are used: tcsetattr (via term_shutdown),
+// signal, raise.
+static void signal_exit_handler(int sig) {
+	term_shutdown();
+	signal(sig, SIG_DFL);
+	raise(sig);
+}
+
+static void install_signal_handlers(void) {
+	(void)signal(SIGINT,  signal_exit_handler);
+	(void)signal(SIGTERM, signal_exit_handler);
+	(void)signal(SIGHUP,  signal_exit_handler);
+}
+
 void debugger_stdio_init(void) {
 	// Line-buffered stdout so command responses flush at '\n' without
 	// requiring an explicit fflush after every byte.
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	make_stdin_nonblocking();
 	term_init();
+	install_signal_handlers();
 	dbg_register_frontend(&stdio_frontend);
 	emit_banner();
 	emit_prompt();  // initial prompt; subsequent prompts emitted by stdio_tick

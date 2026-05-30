@@ -458,3 +458,8 @@ void term_repaint(const char *prompt) {
 		cursor_back(line_len - cursor_pos);
 	}
 }
+
+void term_clear_line(void) {
+	if (!is_tty_mode) return;
+	write_str("\r\x1b[K");
+}
