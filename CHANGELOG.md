@@ -47,6 +47,7 @@ Newest entries first.
 
 ### Fixed
 
+- Windows build: static-link winpthread for `midi.c`'s mutexes. It previously linked only transitively via FluidSynth, so `-DENABLE_FLUIDSYNTH=OFF` failed to link.
 - `video_win32.c`: build under mingw-w64 headers that predate the Windows 11 DWM rounded-corner constants (fall back to literal values).
 - `midi.c`: include `<time.h>` for `time()`, which MinGW does not pull in transitively.
 

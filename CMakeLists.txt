@@ -256,6 +256,11 @@ if(WIN32)
             -static-libgcc
             -Wl,--subsystem,console
         )
+        # midi.c uses pthread mutexes; static-link winpthread so the exe stays
+        # self-contained (no libwinpthread-1.dll to ship alongside it). FluidSynth
+        # pulls pthread in transitively, so this only matters with
+        # -DENABLE_FLUIDSYNTH=OFF.
+        target_link_libraries(x16emu PRIVATE -l:libwinpthread.a)
     endif()
     target_link_libraries(x16emu PRIVATE dwmapi)
 endif()
