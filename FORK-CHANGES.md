@@ -1,4 +1,4 @@
-# Changelog
+# Fork changes
 
 A list of changes in this fork, recorded incrementally in the
 [Keep a Changelog](https://keepachangelog.com/) format. It complements
