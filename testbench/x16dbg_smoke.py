@@ -191,6 +191,35 @@ def check(label, cond, detail=""):
 		print(f"  FAIL {label}{suffix}")
 
 
+def cnt_until_event(d, prefix, timeout=5.0):
+	"""Resume the CPU and collect events until one starts with `prefix`.
+
+	At warp speed a breakpoint or watchpoint can fire and emit its event in
+	the same read as `cnt`'s own prompt, so the event may arrive with the
+	`cnt` response or asynchronously on the next prompt. Handle both, and
+	return without raising on timeout so the caller's check fails cleanly.
+	"""
+	_, events = d.cmd("cnt")
+	if not any(e.startswith(prefix) for e in events):
+		try:
+			_, extra = d.wait_prompt(timeout=timeout)
+			events += extra
+		except TimeoutError:
+			pass
+	return events
+
+
+def arm(d, code):
+	"""Stop the CPU, write a short routine at $0500, and point the PC at it.
+
+	`brk` first so `srg pc` always runs while stopped: setting the PC while
+	the CPU is still running races with instruction fetch and is ignored.
+	"""
+	d.cmd("brk")
+	d.cmd("wmm 00 0500 " + code)
+	d.cmd("srg pc 0500")
+
+
 def main():
 	emu = find_emulator()
 	rom = find_rom()
@@ -436,10 +465,10 @@ def main():
 		except AssertionError:
 			check("read watchpoint rejected in write-only build", True)
 		try:
-			d.cmd("swp 00 0070 if a==5")
-			check("watchpoint condition rejected for now", False, "no ERR")
+			d.cmd("swp 00 0090 if a ==")
+			check("malformed watchpoint condition rejected", False, "no ERR")
 		except AssertionError:
-			check("watchpoint condition rejected for now", True)
+			check("malformed watchpoint condition rejected", True)
 		try:
 			d.cmd("cwp 9")
 			check("cwp on a missing watchpoint errors", False, "no ERR")
@@ -451,11 +480,9 @@ def main():
 		# Fire: inject a routine that writes a known ZP location, point the
 		# CPU at it, and run. Deterministic regardless of machine state or
 		# host speed -- the watched write happens within two instructions.
-		d.cmd("wmm 00 0500 a9 aa 85 70")   # LDA #$aa ; STA $70
-		d.cmd("srg pc 0500")
+		arm(d, "a9 aa 85 70")              # LDA #$aa ; STA $70
 		d.cmd("swp 00 0070")
-		d.cmd("cnt")
-		_, events = d.wait_prompt(timeout=5.0)
+		events = cnt_until_event(d, "* WP 0 w 00:0070=aa")
 		check("write watchpoint fires with * WP (id, addr, value, pc)",
 		      any(e.startswith("* WP 0 w 00:0070=aa") and "pc=00:0502" in e for e in events),
 		      events)
@@ -463,6 +490,57 @@ def main():
 		check("watchpoint hit count incremented",
 		      data == ["0: w 00:0070 hits=1"], data)
 		d.cmd("cwp *")
+
+		print()
+		print("--- conditional watchpoints + breakpoints ---")
+		# Deterministic routines that stop on their own (no free-running loops
+		# or timing): `LDA #$aa ; STA $70` makes the watched write / reaches the
+		# breakpoint, and the `... ; STP` variant runs on to a clean STP stop
+		# when the condition does not fire.
+
+		# Watchpoint, condition true -> fires.
+		arm(d, "a9 aa 85 70")
+		d.cmd("swp 00 0070 if val == $aa")
+		data, _ = d.cmd("lwp")
+		check("lwp shows the watchpoint condition",
+		      data == ["0: w 00:0070 hits=0 if val == $aa"], data)
+		events = cnt_until_event(d, "* WP 0 w 00:0070=aa")
+		check("watchpoint fires when condition is true",
+		      any(e.startswith("* WP 0 w 00:0070=aa") for e in events), events)
+		d.cmd("cwp *")
+
+		# Watchpoint, condition false -> the write happens but does not fire;
+		# the routine runs on to STP.
+		arm(d, "a9 aa 85 70 db")
+		d.cmd("swp 00 0070 if val == $bb")
+		events = cnt_until_event(d, "* BRK STP")
+		check("watchpoint does not fire when condition is false",
+		      any(e.startswith("* BRK STP") for e in events)
+		      and not any(e.startswith("* WP") for e in events), events)
+		data, _ = d.cmd("lwp")
+		check("false-condition watchpoint has zero hits",
+		      data == ["0: w 00:0070 hits=0 if val == $bb"], data)
+		d.cmd("cwp *")
+
+		# Conditional breakpoint, condition true -> fires.
+		arm(d, "a9 aa 85 70")
+		d.cmd("sbp 00 0502 if a == $aa")
+		data, _ = d.cmd("lbp")
+		check("lbp shows the breakpoint condition",
+		      data == ["00: 0502  if a == $aa"], data)
+		events = cnt_until_event(d, "* BRK BREAKPOINT 00 0502")
+		check("conditional breakpoint fires when condition is true",
+		      any(e.startswith("* BRK BREAKPOINT 00 0502") for e in events), events)
+		d.cmd("cbp *")
+
+		# Conditional breakpoint, condition false -> does not break; STP stops.
+		arm(d, "a9 aa 85 70 db")
+		d.cmd("sbp 00 0502 if a == $05")
+		events = cnt_until_event(d, "* BRK STP")
+		check("conditional breakpoint does not fire when condition is false",
+		      any(e.startswith("* BRK STP") for e in events)
+		      and not any(e.startswith("* BRK BREAKPOINT") for e in events), events)
+		d.cmd("cbp *")
 
 		print()
 		print("--- SDL-equivalent stateful commands ---")

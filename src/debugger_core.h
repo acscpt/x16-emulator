@@ -22,14 +22,25 @@
 #define DMODE_STEP 1
 #define DMODE_RUN  2
 
-// Breakpoint shape. Preserved verbatim from the pre-refactor debugger.h.
-//   pc       16-bit instruction address; -1 means "no breakpoint"
-//   bank     CPU program bank (.K); always 0 on 65C02
-//   x16Bank  X16 RAM/ROM bank in the $A000-$FFFF window, else -1
+// Maximum length (including terminator) of a condition's source text, kept
+// alongside the compiled form for listing.
+#define DBG_COND_MAX 80
+
+struct dbg_expr; // condition expression (debugger_expr.h)
+
+// Breakpoint shape. Preserved from the pre-refactor debugger.h, plus an
+// optional condition.
+//   pc        16-bit instruction address; -1 means "no breakpoint"
+//   bank      CPU program bank (.K); always 0 on 65C02
+//   x16Bank   X16 RAM/ROM bank in the $A000-$FFFF window, else -1
+//   cond      compiled `if` condition, or NULL; the breakpoint table owns it
+//   cond_src  the condition's source text (for listing), empty if none
 struct breakpoint {
-	int     pc;
-	uint8_t bank;
-	int     x16Bank;
+	int             pc;
+	uint8_t         bank;
+	int             x16Bank;
+	struct dbg_expr *cond;
+	char            cond_src[DBG_COND_MAX];
 };
 
 // Why the emulator entered the stopped state. Passed to on_break() so
@@ -143,20 +154,30 @@ uint32_t dbg_clocks_since_resume(void);
 // consulted. Ids are slot-stable: the slot index is the id, assigned at
 // creation and unchanged until the watchpoint is removed.
 struct watchpoint {
-	bool     in_use;
-	bool     enabled;
-	bool     on_read;
-	bool     on_write;
-	uint16_t start;
-	uint16_t end;
-	int      x16Bank;
-	uint64_t hits;
+	bool             in_use;
+	bool             enabled;
+	bool             on_read;
+	bool             on_write;
+	uint16_t         start;
+	uint16_t         end;
+	int              x16Bank;
+	uint64_t         hits;
+	struct dbg_expr *cond;            // optional `if` condition, or NULL
+	char             cond_src[DBG_COND_MAX];
 };
 
 // Add a watchpoint. Returns the slot id (0..DBG_MAX_WATCHPOINTS-1) on
 // success, or -1 if the table is full or the request is invalid (no access
 // type, or end < start). The id is stable for the watchpoint's lifetime.
-int  dbg_watch_add(int x16Bank, uint16_t start, uint16_t end, bool on_read, bool on_write);
+// `cond` is an optional compiled condition (the table takes ownership) with
+// `cond_src` its source text; pass NULL / "" for none.
+int  dbg_watch_add(int x16Bank, uint16_t start, uint16_t end, bool on_read, bool on_write,
+                   struct dbg_expr *cond, const char *cond_src);
+
+// Compile a condition expression against the debugger's operand vocabulary
+// (registers, flags, mem[...], and in watch context addr/val/is_write).
+// Returns NULL on a parse error, writing a message into errbuf if given.
+struct dbg_expr *dbg_compile_condition(const char *src, char *errbuf, size_t errlen);
 
 // Remove the watchpoint in slot id. Returns true if one was present.
 bool dbg_watch_remove(int id);

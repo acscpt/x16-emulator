@@ -191,6 +191,7 @@ set(X16_SOURCES
     src/debugger.c
     src/debugger_stdio.c
     src/debugger_term.c
+    src/debugger_expr.c
     src/javascript_interface.c
     src/joystick.c
     src/rendertext.c
@@ -340,6 +341,17 @@ endif()
 if(EMSCRIPTEN)
     set_target_properties(makecart PROPERTIES SUFFIX ".html")
     target_link_options(makecart PRIVATE "SHELL:-s USE_ZLIB=1")
+endif()
+
+# --- Standalone unit test: condition expression evaluator ---
+# debugger_expr.c has no emulator dependencies, so this links on its own.
+# Run with ./build/test_debugger_expr. Not built for the WebAssembly target.
+if(NOT EMSCRIPTEN)
+    add_executable(test_debugger_expr
+        src/debugger_expr.c
+        testbench/test_debugger_expr.c
+    )
+    target_include_directories(test_debugger_expr PRIVATE src)
 endif()
 
 # Build summary

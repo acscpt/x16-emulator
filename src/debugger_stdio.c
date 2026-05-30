@@ -353,14 +353,68 @@ static void cmd_rst(int argc, char **argv) {
 	rdy();
 }
 
+// Index of an `if` token in argv[from..argc), or argc if there is none.
+static int find_if(int argc, char **argv, int from) {
+	for (int i = from; i < argc; i++) {
+		if (!strcmp(argv[i], "if")) return i;
+	}
+	return argc;
+}
+
+// Join argv[from..argc) into out with single-space separators.
+static void join_args(char *out, size_t outsz, int argc, char **argv, int from) {
+	size_t len = 0;
+	out[0] = '\0';
+	for (int i = from; i < argc; i++) {
+		size_t l = strlen(argv[i]);
+		if (len + (size_t)(i > from ? 1 : 0) + l >= outsz) break;
+		if (i > from) out[len++] = ' ';
+		memcpy(out + len, argv[i], l);
+		len += l;
+	}
+	out[len] = '\0';
+}
+
+// Compile the optional `if` clause at argv[if_at]. Returns NULL (no error)
+// when if_at >= argc. On a parse error, reports it via err_msg and sets
+// *failed; the source text is written to src_out (size DBG_COND_MAX).
+static struct dbg_expr *compile_if(int argc, char **argv, int if_at, char *src_out, bool *failed) {
+	*failed = false;
+	src_out[0] = '\0';
+	if (if_at >= argc) {
+		return NULL;
+	}
+	if (if_at + 1 >= argc) {
+		err_msg("if needs a condition");
+		*failed = true;
+		return NULL;
+	}
+	join_args(src_out, DBG_COND_MAX, argc, argv, if_at + 1);
+	char errbuf[80];
+	struct dbg_expr *e = dbg_compile_condition(src_out, errbuf, sizeof(errbuf));
+	if (!e) {
+		err_msg(errbuf);
+		*failed = true;
+		return NULL;
+	}
+	return e;
+}
+
 static void cmd_sbp(int argc, char **argv) {
+	int if_at = find_if(argc, argv, 0);
 	uint32_t bank, addr;
-	if (argc != 2 || !parse_hex(argv[0], &bank, 0xff) || !parse_hex(argv[1], &addr, 0xffff)) {
-		err_msg("usage: sbp <bank> <addr>");
+	if (if_at != 2 || !parse_hex(argv[0], &bank, 0xff) || !parse_hex(argv[1], &addr, 0xffff)) {
+		err_msg("usage: sbp <bank> <addr> [if <cond>]");
 		return;
 	}
-	struct breakpoint bp = { .pc = (int)addr, .bank = (uint8_t)bank, .x16Bank = -1 };
-	if (!dbg_breakpoint_add(bp)) {
+	char src[DBG_COND_MAX];
+	bool failed;
+	struct dbg_expr *cond = compile_if(argc, argv, if_at, src, &failed);
+	if (failed) return;
+	struct breakpoint bp = { .pc = (int)addr, .bank = (uint8_t)bank, .x16Bank = -1, .cond = cond };
+	strncpy(bp.cond_src, src, DBG_COND_MAX - 1);
+	bp.cond_src[DBG_COND_MAX - 1] = '\0';
+	if (!dbg_breakpoint_add(bp)) {  // frees cond on failure
 		err_msg("breakpoint table full");
 		return;
 	}
@@ -405,7 +459,9 @@ static void cmd_lbp(int argc, char **argv) {
 	int n = dbg_breakpoint_count();
 	for (int i = 0; i < n; i++) {
 		struct breakpoint bp = dbg_breakpoint_get(i);
-		printf("%02x: %04x\n", bp.bank, (uint16_t)bp.pc);
+		printf("%02x: %04x", bp.bank, (uint16_t)bp.pc);
+		if (bp.cond_src[0]) printf("  if %s", bp.cond_src);
+		printf("\n");
 	}
 	rdy();
 }
@@ -439,33 +495,33 @@ static void cmd_swp(int argc, char **argv) {
 		err_msg("only write watchpoints are supported in this build");
 		return;
 	}
-	for (int j = i; j < argc; j++) {
-		if (!strcmp(argv[j], "if")) {
-			err_msg("watchpoint conditions (if) arrive in a later build");
-			return;
-		}
-	}
+	int if_at = find_if(argc, argv, i);
+	int nspec = if_at - i;  // bank addr [end]
 	uint32_t bank, addr, end;
-	if (argc - i < 2 || argc - i > 3
+	if (nspec < 2 || nspec > 3
 	    || !parse_hex(argv[i], &bank, 0xff)
 	    || !parse_hex(argv[i + 1], &addr, 0xffff)) {
-		err_msg("usage: swp [w] <bank> <addr> [end]");
+		err_msg("usage: swp [w] <bank> <addr> [end] [if <cond>]");
 		return;
 	}
 	end = addr;
-	if (argc - i == 3 && !parse_hex(argv[i + 2], &end, 0xffff)) {
-		err_msg("usage: swp [w] <bank> <addr> [end]");
+	if (nspec == 3 && !parse_hex(argv[i + 2], &end, 0xffff)) {
+		err_msg("usage: swp [w] <bank> <addr> [end] [if <cond>]");
 		return;
 	}
 	if (end < addr) {
 		err_msg("end < addr");
 		return;
 	}
+	char src[DBG_COND_MAX];
+	bool failed;
+	struct dbg_expr *cond = compile_if(argc, argv, if_at, src, &failed);
+	if (failed) return;
 	// Below the banked window the address is unbanked (x16Bank -1); the
 	// bank argument is conventionally 00 there.
 	int x16Bank = (addr >= 0xA000) ? (int)bank : -1;
-	int id = dbg_watch_add(x16Bank, (uint16_t)addr, (uint16_t)end, on_read, on_write);
-	if (id < 0) {
+	int id = dbg_watch_add(x16Bank, (uint16_t)addr, (uint16_t)end, on_read, on_write, cond, src);
+	if (id < 0) {  // frees cond on failure
 		err_msg("watchpoint table full");
 		return;
 	}
@@ -484,6 +540,7 @@ static void cmd_lwp(int argc, char **argv) {
 		printf("%d: %s %02x:%04x", i, acc, abank, w.start);
 		if (w.end != w.start) printf("-%04x", w.end);
 		printf(" hits=%llu", (unsigned long long)w.hits);
+		if (w.cond_src[0]) printf(" if %s", w.cond_src);
 		if (!w.enabled) printf(" off");
 		printf("\n");
 	}
@@ -1175,11 +1232,11 @@ static void cmd_hlp(int argc, char **argv) {
 	puts("  home                                     view_pc := regs.pc; dump disasm");
 	puts("  tb                                       toggle breakpoint at view_pc");
 	puts("breakpoints (up to 16, explicit-args):");
-	puts("  sbp <bank> <addr>                   add a user breakpoint");
+	puts("  sbp <bank> <addr> [if <cond>]       add a user breakpoint");
 	puts("  cbp <bank> <addr> | cbp *           clear a breakpoint, or all");
 	puts("  lbp                                 list breakpoints");
 	puts("watchpoints (up to 16, write-only for now):");
-	puts("  swp [w] <bank> <addr> [end]         add a write watchpoint");
+	puts("  swp [w] <bank> <addr> [end] [if <cond>]  add a write watchpoint");
 	puts("  cwp <id> | cwp *                    clear a watchpoint, or all");
 	puts("  lwp                                 list watchpoints");
 	puts("  wp <id> on|off                      enable/disable a watchpoint");

@@ -7,6 +7,7 @@
 // dbg_register_frontend().
 
 #include "debugger_core.h"
+#include "debugger_expr.h"
 #include "memory.h"
 #include "timing.h"
 #include "video.h"
@@ -151,6 +152,77 @@ static void enter_stop(dbg_break_reason_t reason) {
 	notify_break(reason, stopped_pc_bank, (uint16_t)stopped_pc);
 }
 
+// ----- Condition expressions -----
+
+// Operand context for evaluating a condition. The register snapshot is taken
+// once before eval; the watch fields carry the current access (zero for a
+// breakpoint condition, where addr/val/is_write resolve to 0).
+struct cond_ctx {
+	dbg_regs_snapshot_t r;
+	uint16_t wp_addr;
+	uint8_t  wp_val;
+	bool     wp_is_write;
+};
+
+static const char *const cond_vars[] = {
+	"a", "x", "y", "sp", "pc", "p", "n", "v", "z", "c", "i", "d",
+	"addr", "val", "is_read", "is_write", "mem", NULL,
+};
+
+static bool cond_valid(void *ctx, const char *name) {
+	(void)ctx;
+	for (int i = 0; cond_vars[i]; i++) {
+		if (!strcmp(cond_vars[i], name)) return true;
+	}
+	return false;
+}
+
+static int64_t cond_resolve(void *ctx, const char *name, bool indexed, int64_t index) {
+	struct cond_ctx *c = ctx;
+	if (indexed) {
+		// mem[addr]: a current-bank CPU-space read.
+		return dbg_read_mem(0, (uint16_t)index, -1);
+	}
+	uint8_t p = c->r.status;
+	if (!strcmp(name, "a"))        return c->r.a;
+	if (!strcmp(name, "x"))        return c->r.xl;
+	if (!strcmp(name, "y"))        return c->r.yl;
+	if (!strcmp(name, "sp"))       return c->r.sp;
+	if (!strcmp(name, "pc"))       return c->r.pc;
+	if (!strcmp(name, "p"))        return p;
+	if (!strcmp(name, "n"))        return (p >> 7) & 1;
+	if (!strcmp(name, "v"))        return (p >> 6) & 1;
+	if (!strcmp(name, "d"))        return (p >> 3) & 1;
+	if (!strcmp(name, "i"))        return (p >> 2) & 1;
+	if (!strcmp(name, "z"))        return (p >> 1) & 1;
+	if (!strcmp(name, "c"))        return p & 1;
+	if (!strcmp(name, "addr"))     return c->wp_addr;
+	if (!strcmp(name, "val"))      return c->wp_val;
+	if (!strcmp(name, "is_write")) return c->wp_is_write ? 1 : 0;
+	if (!strcmp(name, "is_read"))  return 0; // write-only watchpoints for now
+	return 0;
+}
+
+struct dbg_expr *dbg_compile_condition(const char *src, char *errbuf, size_t errlen) {
+	return dbg_expr_compile(src, cond_valid, NULL, errbuf, errlen);
+}
+
+// Evaluate a condition. NULL means "always true".
+static bool cond_passes(struct dbg_expr *cond, bool have_access, uint16_t addr, uint8_t val, bool is_write) {
+	if (!cond) {
+		return true;
+	}
+	struct cond_ctx c;
+	memset(&c, 0, sizeof(c));
+	dbg_get_regs(&c.r);
+	if (have_access) {
+		c.wp_addr     = addr;
+		c.wp_val      = val;
+		c.wp_is_write = is_write;
+	}
+	return dbg_expr_eval(cond, cond_resolve, &c) != 0;
+}
+
 // ----- Public API -----
 
 dbg_tick_t dbg_tick(void) {
@@ -181,7 +253,8 @@ dbg_tick_t dbg_tick(void) {
 	if (currentMode != DMODE_STOP) {
 		bool hit_user = false;
 		for (int i = 0; i < user_bp_count; i++) {
-			if (hit_bp(regs.pc, regs.k, user_bp[i])) {
+			if (hit_bp(regs.pc, regs.k, user_bp[i])
+			    && cond_passes(user_bp[i].cond, false, 0, 0, false)) {
 				hit_user = true;
 				break;
 			}
@@ -261,14 +334,19 @@ void dbg_reset_cpu(void) {
 	reset6502(regs.is65c816);
 }
 
+// Takes ownership of bp.cond: it is stored on success, freed on any path
+// that does not store it (invalid, duplicate, or full).
 bool dbg_breakpoint_add(struct breakpoint bp) {
 	if (bp.pc < 0) {
+		if (bp.cond) dbg_expr_free(bp.cond);
 		return false;
 	}
 	if (find_user_bp(bp.pc, bp.bank, bp.x16Bank) >= 0) {
-		return true; // already present; idempotent
+		if (bp.cond) dbg_expr_free(bp.cond); // already present; keep the existing one
+		return true;
 	}
 	if (user_bp_count >= DBG_MAX_BREAKPOINTS) {
+		if (bp.cond) dbg_expr_free(bp.cond);
 		return false; // table full
 	}
 	user_bp[user_bp_count++] = bp;
@@ -280,6 +358,7 @@ bool dbg_breakpoint_remove(struct breakpoint bp) {
 	if (i < 0) {
 		return false;
 	}
+	if (user_bp[i].cond) dbg_expr_free(user_bp[i].cond);
 	// Compact the table, preserving insertion order.
 	for (int j = i; j < user_bp_count - 1; j++) {
 		user_bp[j] = user_bp[j + 1];
@@ -289,6 +368,9 @@ bool dbg_breakpoint_remove(struct breakpoint bp) {
 }
 
 void dbg_breakpoint_clear_all(void) {
+	for (int i = 0; i < user_bp_count; i++) {
+		if (user_bp[i].cond) dbg_expr_free(user_bp[i].cond);
+	}
 	user_bp_count = 0;
 }
 
@@ -310,9 +392,9 @@ struct breakpoint dbg_breakpoint_get(int idx) {
 // the table as a single slot here never clobbers stdio's breakpoints.
 void dbg_set_breakpoint(struct breakpoint bp) {
 	dbg_breakpoint_clear_all();
-	if (bp.pc >= 0) {
-		dbg_breakpoint_add(bp);
-	}
+	// dbg_breakpoint_add frees bp.cond when bp.pc < 0, so this also handles
+	// the clear case. The SDL frontend never sets conditions anyway.
+	dbg_breakpoint_add(bp);
 }
 
 struct breakpoint dbg_get_breakpoint(void) {
@@ -325,8 +407,11 @@ uint32_t dbg_clocks_since_resume(void) {
 
 // ----- Watchpoints -----
 
-int dbg_watch_add(int x16Bank, uint16_t start, uint16_t end, bool on_read, bool on_write) {
+// Takes ownership of cond: stored on success, freed if the request fails.
+int dbg_watch_add(int x16Bank, uint16_t start, uint16_t end, bool on_read, bool on_write,
+                  struct dbg_expr *cond, const char *cond_src) {
 	if ((!on_read && !on_write) || end < start) {
+		if (cond) dbg_expr_free(cond);
 		return -1;
 	}
 	for (int i = 0; i < DBG_MAX_WATCHPOINTS; i++) {
@@ -339,10 +424,17 @@ int dbg_watch_add(int x16Bank, uint16_t start, uint16_t end, bool on_read, bool 
 			watch_table[i].end      = end;
 			watch_table[i].x16Bank  = x16Bank;
 			watch_table[i].hits     = 0;
+			watch_table[i].cond     = cond;
+			watch_table[i].cond_src[0] = '\0';
+			if (cond_src) {
+				strncpy(watch_table[i].cond_src, cond_src, DBG_COND_MAX - 1);
+				watch_table[i].cond_src[DBG_COND_MAX - 1] = '\0';
+			}
 			recompute_watch_armed();
 			return i;
 		}
 	}
+	if (cond) dbg_expr_free(cond);
 	return -1; // table full
 }
 
@@ -350,6 +442,8 @@ bool dbg_watch_remove(int id) {
 	if (id < 0 || id >= DBG_MAX_WATCHPOINTS || !watch_table[id].in_use) {
 		return false;
 	}
+	if (watch_table[id].cond) dbg_expr_free(watch_table[id].cond);
+	watch_table[id].cond   = NULL;
 	watch_table[id].in_use = false;
 	recompute_watch_armed();
 	return true;
@@ -357,6 +451,8 @@ bool dbg_watch_remove(int id) {
 
 void dbg_watch_clear_all(void) {
 	for (int i = 0; i < DBG_MAX_WATCHPOINTS; i++) {
+		if (watch_table[i].cond) dbg_expr_free(watch_table[i].cond);
+		watch_table[i].cond   = NULL;
 		watch_table[i].in_use = false;
 	}
 	dbg_watch_write_armed = 0;
@@ -409,6 +505,9 @@ void dbg_watch_on_write(uint16_t addr, uint8_t value) {
 		}
 		if (addr < w->start || addr > w->end || w->x16Bank != eff) {
 			continue;
+		}
+		if (!cond_passes(w->cond, true, addr, value, true)) {
+			continue; // condition false; another watch may still match
 		}
 		w->hits++;
 		pending_hit.id       = i;
