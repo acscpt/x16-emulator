@@ -18,19 +18,10 @@
 void debugger_stdio_init(void) {}
 void debugger_stdio_shutdown(void) {}
 
-#elif defined(_WIN32)
-// TODO: non-blocking stdin on Windows (WaitForSingleObject on
-// STD_INPUT_HANDLE, or a worker-thread reader). Not yet implemented;
-// the protocol design has not been validated against MinGW stdin quirks.
-#include <stdio.h>
-void debugger_stdio_init(void) {
-	fprintf(stderr, "-debugstdio is not yet supported on Windows.\n");
-}
-void debugger_stdio_shutdown(void) {}
-
 #else
 // ===========================================================================
-// POSIX implementation.
+// Frontend implementation. Platform-neutral: all OS-specific terminal and
+// stdin handling lives behind debugger_console.h (POSIX and Windows backends).
 // ===========================================================================
 
 #include "debugger_core.h"
