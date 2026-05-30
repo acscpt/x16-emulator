@@ -13,10 +13,10 @@ About this fork
 ---------------
 
 This is a fork of [X16Community/x16-emulator](https://github.com/X16Community/x16-emulator).
-It adds a headless, scriptable stdio debugger (`-debugstdio`): the F12 debugger
-driven over stdin/stdout instead of the SDL overlay, for scripts, test harnesses,
-and terminal use. See [docs/debug_repl.md](./docs/debug_repl.md) for the guide and
-[FORK-CHANGES.md](./FORK-CHANGES.md) for the full list of fork changes.
+
+It adds a headless, scriptable stdio debugger (`-debugstdio`) driven over stdio alongside the F12 SDL debugger (`-debugstdio` defualts to headless).
+
+For scripts, test harnesses, and terminal use. See [docs/debug_repl.md](./docs/debug_repl.md) for the guide and [FORK-CHANGES.md](./FORK-CHANGES.md) for the full list of fork changes.
 
 Branches:
 
