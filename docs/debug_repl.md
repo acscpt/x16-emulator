@@ -285,10 +285,6 @@ RDY
 
 ## Limitations
 
-### Breakpoint table size
-
-The debugger core holds up to 16 user breakpoints. `sbp` and `tb` add to the table without disturbing existing entries; `cbp` removes one (or `cbp *` all). Adding past 16 fails with `ERR breakpoint table full`. 
-
 ### Platform support
 
 Linux and macOS are fully implemented. WebAssembly compiles, but the `-debugstdio` frontend is a build-time no-op there because the browser has no stdin to read from. Windows is stubbed: passing `-debugstdio` to a Windows build prints "not yet supported" on stderr and exits the frontend without starting the emulator loop. 
@@ -297,6 +293,6 @@ Linux and macOS are fully implemented. WebAssembly compiles, but the `-debugstdi
 
 Inspection commands such as `reg`, `mem`, `stk`, and `vrg` work while the CPU is running, but the values they return are sampled at the instruction boundary the debugger's tick handler happens to land on. The samples are well-defined (the CPU is between instructions, not mid-execution) but slightly stale by the time they reach the prompt. For a precise snapshot, `brk` first and then read.
 
-### The `STP` opcode wedges the CPU
+### The `STP` opcode halts the CPU
 
-Executing 6502 `STP` (opcode `$DB`) drops the CPU into the debugger with `* BRK STP <bank> <addr>`. The CPU does not advance past the instruction on its own; subsequent `cnt` or `stp` from that PC will re-execute `STP` and break again. To recover, point the PC elsewhere (`r pc <addr>` followed by `cnt`) or reset the CPU entirely with `rst`.
+Executing the 65C02 `STP` instruction (opcode `$DB`, "stop the clock") halts the CPU. It breaks into the debugger with `* BRK STP <bank> <addr>` and leaves the program counter parked on the instruction. Because the CPU cannot advance past `STP` on its own, resuming with `cnt` re-executes it and breaks again, as does single-stepping (note: the debugger command `stp` is "step", unrelated to the CPU opcode `STP`). To continue, repoint the program counter past it (`r pc <addr>`) before `cnt`, or reset the CPU with `rst`.

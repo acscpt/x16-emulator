@@ -23,7 +23,7 @@ Newest entries first.
     step-over, continue, reset, and bail.
   - Stateful view cursor: `m` / `d` / `v` dumps with `+`/`-` nudges, a
     pinned view bank (`b view`), and an optional status header (`hdr` / `st`).
-  - Up to 16 simultaneous breakpoints — `sbp` (add), `cbp <bank> <addr>` /
+  - Up to 16 simultaneous breakpoints: `sbp` (add), `cbp <bank> <addr>` /
     `cbp *` (clear one / all), `lbp` (list), and `tb` (toggle at the cursor).
   - Interactive terminal line editor when stdin is a TTY: own echo,
     backspace, `Enter`, up/down command history, left/right cursor movement,
