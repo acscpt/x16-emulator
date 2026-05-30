@@ -413,6 +413,27 @@ def main():
 		check("tb clears BP when set", data == [], data)
 
 		print()
+		print("--- view-cursor nudge ---")
+		d.cmd("m 1000")
+		data, _ = d.cmd("m +")
+		check("m + advances data cursor by 0x100", data[0].startswith("1100:"), data[0])
+		data, _ = d.cmd("m +80")
+		check("m +<off> advances by explicit offset", data[0].startswith("1180:"), data[0])
+		data, _ = d.cmd("m -")
+		check("m - retreats data cursor by 0x100", data[0].startswith("1080:"), data[0])
+		d.cmd("d 2000")
+		data, _ = d.cmd("d +")
+		check("d + advances disasm cursor by 0x10", data[0].startswith("00:2010:"), data[0])
+		d.cmd("b view follow")
+		data, _ = d.cmd("st")
+		check("b view follow resets to -1", any("view_bank -1" in l for l in data), data)
+		d.cmd("b view 3")
+		d.cmd("b view +")
+		data, _ = d.cmd("st")
+		check("b view + nudges by 1", any("view_bank 4" in l for l in data), data)
+		d.cmd("b view follow")  # reset for the next section
+
+		print()
 		print("--- header + hdr/st ---")
 		# By default the header emits 3 lines (cpu/aux/view) plus a 4th (bp)
 		# only when one is set. The parser absorbs them into d.last_header.
