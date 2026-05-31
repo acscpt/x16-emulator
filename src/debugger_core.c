@@ -511,27 +511,33 @@ bool dbg_get_watch_hit(dbg_watch_hit_t *out) {
 	return true;
 }
 
-void dbg_watch_on_write(uint16_t addr, uint8_t value) {
+// Shared body for the read and write hooks below. is_write selects which
+// access flag to match and is recorded on the hit; everything else (the poke
+// suppress and pending-hit guards, the range/bank match, the condition, the
+// instruction-PC attribution) is identical for both paths.
+static void watch_on_access(uint16_t addr, uint8_t value, bool is_write) {
 	// Ignore debugger pokes (they route through write6502 too) and ignore
-	// further writes once a hit is pending; the first per instruction wins.
+	// further accesses once a hit is pending; the first per instruction wins.
+	// Reads have no poke to ignore -- the debugger reads via real_read6502 --
+	// but the pending/suppress guards apply to both paths.
 	if (watch_suppress || watch_pending) {
 		return;
 	}
 	int eff = dbg_x16_bank(addr, regs.k);
 	for (int i = 0; i < DBG_MAX_WATCHPOINTS; i++) {
 		struct watchpoint *w = &watch_table[i];
-		if (!w->in_use || !w->enabled || !w->on_write) {
+		if (!w->in_use || !w->enabled || (is_write ? !w->on_write : !w->on_read)) {
 			continue;
 		}
 		if (addr < w->start || addr > w->end || w->x16Bank != eff) {
 			continue;
 		}
-		if (!cond_passes(w->cond, true, addr, value, true)) {
+		if (!cond_passes(w->cond, true, addr, value, is_write)) {
 			continue; // condition false; another watch may still match
 		}
 		w->hits++;
 		pending_hit.id       = i;
-		pending_hit.is_write = true;
+		pending_hit.is_write = is_write;
 		pending_hit.x16Bank  = eff;
 		pending_hit.addr     = addr;
 		pending_hit.value    = value;
@@ -542,37 +548,12 @@ void dbg_watch_on_write(uint16_t addr, uint8_t value) {
 	}
 }
 
+void dbg_watch_on_write(uint16_t addr, uint8_t value) {
+	watch_on_access(addr, value, true);
+}
+
 void dbg_watch_on_read(uint16_t addr, uint8_t value) {
-	// Mirror dbg_watch_on_write for the read path. The debugger's own reads use
-	// real_read6502 (debugOn) and never reach here, so there is no poke to
-	// suppress; only the pending-hit guard (first access per instruction wins)
-	// and the shared watch_suppress apply.
-	if (watch_suppress || watch_pending) {
-		return;
-	}
-	int eff = dbg_x16_bank(addr, regs.k);
-	for (int i = 0; i < DBG_MAX_WATCHPOINTS; i++) {
-		struct watchpoint *w = &watch_table[i];
-		if (!w->in_use || !w->enabled || !w->on_read) {
-			continue;
-		}
-		if (addr < w->start || addr > w->end || w->x16Bank != eff) {
-			continue;
-		}
-		if (!cond_passes(w->cond, true, addr, value, false)) {
-			continue; // condition false; another watch may still match
-		}
-		w->hits++;
-		pending_hit.id       = i;
-		pending_hit.is_write = false;
-		pending_hit.x16Bank  = eff;
-		pending_hit.addr     = addr;
-		pending_hit.value    = value;
-		pending_hit.pc       = cur_instr_pc;
-		pending_hit.pc_bank  = cur_instr_bank;
-		watch_pending = true;
-		return;
-	}
+	watch_on_access(addr, value, false);
 }
 
 // ----- View-cursor accessors -----
