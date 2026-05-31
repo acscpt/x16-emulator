@@ -9,6 +9,8 @@ Newest entries first.
 
 ## [Unreleased]
 
+## [acscpt.1] - 2026-05-31
+
 ### Added
 
 - **`-debugstdio`: a headless, scriptable REPL frontend for the debugger.** Runs the debugger over stdin/stdout instead of the SDL overlay, so the emulator can be driven by a script, a test harness, or a terminal user. Mutually exclusive with `-debug`.
