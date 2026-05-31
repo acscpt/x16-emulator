@@ -2,7 +2,9 @@
 
 ## Introduction
 
-The Commander X16 emulator includes an interactive debugger that can pause the running machine and inspect any aspect of it from the CPU  state, RAM and BRAM, to the VRAM and video chip to machine state such as registers, breakpoints and execution steps. Breakpoints stop the CPU when execution reaches an address; watchpoints stop it when the running program reads or writes a memory location; and either can carry a condition, an expression over machine state, so it stops only when that holds. Execution can be single-stepped one instruction at a time.
+The Commander X16 emulator includes an interactive debugger that can pause the running machine and inspect any aspect of it from the CPU  state, RAM and BRAM, the VRAM and video chip to the machine state such as registers, breakpoints and execution steps.
+
+Breakpoints stop the CPU when execution reaches an address and watchpoints stop execution when the running program reads or writes to a specific memory location. Both breakpoints and wathpoints can have an optional condition, so the break or watchpoint triggers when the condition is met.
 
 The same debugger drives both the SDL graphical UI (`-debug`) and the stdio shell (`-debugstdio`).
 
@@ -327,7 +329,7 @@ RDY
 
 ### Platform support
 
-Linux, macOS, and Windows are implemented. WebAssembly compiles, but the `-debugstdio` frontend is a build-time no-op there because the browser has no stdin to read from. 
+Linux, macOS, and Windows are implemented. WebAssembly compiles, but the `-debugstdio` frontend is a build-time no-op there because the browser has no stdin to read from.
 
 ### CPU sampling during RUN
 
