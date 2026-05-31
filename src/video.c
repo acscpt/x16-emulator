@@ -207,6 +207,7 @@ uint8_t video_space_read(uint32_t address);
 static void video_space_read_range(uint8_t* dest, uint32_t address, uint32_t size);
 
 static void refresh_palette();
+static void render_line(uint16_t y, float scan_pos_x);
 
 void
 mousegrab_toggle() {
@@ -564,23 +565,47 @@ struct video_sprite_properties
 };
 
 #ifndef __EMSCRIPTEN__
-static void
-screenshot(void)
+// Write the current composited framebuffer to `path` as a PNG, or to a
+// timestamped file in the working directory when path is NULL or empty. The
+// resolved path is always copied into out_path so a caller can report it even
+// on failure. Returns true on success. The framebuffer is whatever VERA last
+// composited (text, tiles, bitmap, sprites), so this captures the live screen.
+bool
+video_save_screenshot(const char *path, char *out_path, size_t out_len)
 {
-	char path[PATH_MAX];
-	const time_t now = time(NULL);
-	strftime(path, PATH_MAX, "x16emu-%Y-%m-%d-%H-%M-%S.png", localtime(&now));
+	if (path && path[0]) {
+		snprintf(out_path, out_len, "%s", path);
+	} else {
+		const time_t now = time(NULL);
+		strftime(out_path, out_len, "x16emu-%Y-%m-%d-%H-%M-%S.png", localtime(&now));
+	}
+
+	// Compose the current frame from live VERA state. A windowed run keeps the
+	// framebuffer current via video_step, but under -debugstdio (headless) that
+	// per-scanline render never runs, so do a one-shot full render here. This
+	// reads VERA state and writes only the framebuffer and render-internal
+	// history; it does not perturb the emulated machine.
+	for (uint16_t y = 0; y < SCREEN_HEIGHT; y++) {
+		render_line(y, VGA_SCAN_WIDTH);
+	}
 
 	memset(png_buffer, 0, SCREEN_WIDTH * SCREEN_HEIGHT * 3);
 
-	// The framebuffer stores pixels in BRGA but we want RGB:
+	// The framebuffer stores pixels in BGRA but we want RGB:
 	for (int i = 0; i < SCREEN_WIDTH * SCREEN_HEIGHT; i++) {
 		png_buffer[(i*3)+0] = framebuffer[(i*4)+2];
 		png_buffer[(i*3)+1] = framebuffer[(i*4)+1];
 		png_buffer[(i*3)+2] = framebuffer[(i*4)+0];
 	}
 
-	if (stbi_write_png(path, SCREEN_WIDTH, SCREEN_HEIGHT, 3, png_buffer, SCREEN_WIDTH*3)) {
+	return stbi_write_png(out_path, SCREEN_WIDTH, SCREEN_HEIGHT, 3, png_buffer, SCREEN_WIDTH*3) != 0;
+}
+
+static void
+screenshot(void)
+{
+	char path[PATH_MAX];
+	if (video_save_screenshot(NULL, path, sizeof(path))) {
 		printf("Wrote screenshot to %s\n", path);
 	} else {
 		printf("WARNING: Couldn't write screenshot to %s\n", path);

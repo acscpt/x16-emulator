@@ -44,6 +44,10 @@ void debugger_stdio_shutdown(void) {}
 
 extern struct regs regs;
 
+// Defined in video.c. Declared here so this file stays free of the SDL-pulling
+// video.h include; writes the current composited framebuffer to a PNG.
+bool video_save_screenshot(const char *path, char *out_path, size_t out_len);
+
 // ---------------------------------------------------------------------------
 // Async event ring: queued by on_break / on_resume, flushed between commands.
 // Sized for plenty of headroom; a single tick can realistically queue at most
@@ -728,6 +732,22 @@ static void cmd_clk(int argc, char **argv) {
 	rdy();
 }
 
+// Save a PNG of the current screen (the live VERA framebuffer, whatever mode it
+// is in). With a path argument writes there; with none, a timestamped file in
+// the working directory. Prints the path written so a caller can read it back.
+static void cmd_scr(int argc, char **argv) {
+	if (argc > 1) { err_msg("usage: scr [path]"); return; }
+	char written[1024];
+	if (video_save_screenshot(argc == 1 ? argv[0] : NULL, written, sizeof(written))) {
+		printf("%s\n", written);
+		rdy();
+	} else {
+		char msg[1100];
+		snprintf(msg, sizeof(msg), "could not write screenshot to %s", written);
+		err_msg(msg);
+	}
+}
+
 static void cmd_find(int argc, char **argv) {
 	if (argc < 4) {
 		err_msg("usage: find <bank> <start> <len> <byte>... (pattern <= 16 bytes)");
@@ -1251,6 +1271,8 @@ static void cmd_hlp(int argc, char **argv) {
 	puts("  zpr                                 direct-page R0..R15 register pairs");
 	puts("  vrg                                 VERA state snapshot");
 	puts("  clk                                 clocks since last resume");
+	puts("capture:");
+	puts("  scr [<path>]                        save a PNG of the screen (prints the path)");
 	puts("header / status (header lines emit before each prompt):");
 	puts("  hdr                                 show per-line on/off status");
 	puts("  hdr on | off                        toggle all four header lines");
@@ -1318,6 +1340,8 @@ static const struct {
 	{"zpr",  cmd_zpr},
 	{"vrg",  cmd_vrg},
 	{"clk",  cmd_clk},
+	// capture
+	{"scr",  cmd_scr},
 	// header / status
 	{"hdr",  cmd_hdr},
 	{"st",   cmd_st},

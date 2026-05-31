@@ -19,6 +19,12 @@ bool video_update(void);
 void video_end(void);
 bool video_get_irq_out(void);
 void video_save(SDL_RWops *f);
+
+// Write the current composited framebuffer to a PNG. path may be NULL or empty
+// for a timestamped default in the working directory; the resolved path is
+// copied into out_path. Returns true on success.
+bool video_save_screenshot(const char *path, char *out_path, size_t out_len);
+
 uint8_t video_read(uint8_t reg, bool debugOn);
 void video_write(uint8_t reg, uint8_t value);
 void video_update_title(const char* window_title);

@@ -668,6 +668,20 @@ def main():
 		                                       and any("bp" in l for l in data),
 		      data)
 
+		print()
+		print("--- screenshot ---")
+		# scr composes the live VERA frame on demand (the per-scanline render in
+		# video_step does not run headless) and writes a PNG, echoing the path it
+		# wrote. A path echo with RDY (not ERR) means the PNG write succeeded.
+		# A relative name lands in the emulator's working directory.
+		shot = "x16dbg_smoke_shot.png"
+		data, _ = d.cmd("scr " + shot)
+		check("scr writes a PNG and echoes the path", data == [shot], data)
+		try:
+			os.remove(shot)
+		except OSError:
+			pass
+
 	# bail exit code test runs in a separate process -- the X16dbg context
 	# manager always quits cleanly, so we can't trigger bail from within it.
 	print()
