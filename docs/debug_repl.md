@@ -187,9 +187,9 @@ The emulator left STOP for RUN. Fired by `cnt`, and by `sov` when the instructio
 
 A breakpoint was toggled by `tb` (toggle at the view cursor's disasm position). `sbp` and `cbp` change breakpoint state silently; they print `RDY` only.
 
-### `* WP <id> w <bank>:<addr>=<val> pc=<bank>:<pc>`
+### `* WP <id> <a> <bank>:<addr>=<val> pc=<bank>:<pc>`
 
-A watchpoint fired: the running CPU wrote a watched memory location, and the emulator entered STOP just after the write. `<id>` is the watchpoint's slot id, `w` is the access type (write), `<bank>:<addr>=<val>` is the location written and the byte value, and `pc=<bank>:<pc>` is the instruction that made the write. See [`swp`](./debug_repl_commands.md#swp) for arming watchpoints.
+A watchpoint fired: the running CPU accessed a watched memory location, and the emulator entered STOP just after the access. `<id>` is the watchpoint's slot id, `<a>` is the access type (`w` for a write, `r` for a read), `<bank>:<addr>=<val>` is the location and the byte value written or read, and `pc=<bank>:<pc>` is the instruction that made the access. See [`swp`](./debug_repl_commands.md#swp) for arming watchpoints.
 
 ```text
 * WP 0 w 00:0070=aa pc=00:c1a3

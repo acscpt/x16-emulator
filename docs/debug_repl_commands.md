@@ -36,7 +36,7 @@ This is a per-command reference for everything available at the `x16db >` prompt
 | [`sbp`](#sbp) | Breakpoints | Add a user breakpoint, optionally [conditional](#conditions) | F9 at cursor |
 | [`cbp`](#cbp) | Breakpoints | Clear one breakpoint, or all | F9 again at cursor |
 | [`lbp`](#lbp) | Breakpoints | List active breakpoints | visible in panel |
-| [`swp`](#swp) | Watchpoints | Add a write watchpoint, optionally [conditional](#conditions) | - |
+| [`swp`](#swp) | Watchpoints | Add a read/write watchpoint, optionally [conditional](#conditions) | - |
 | [`cwp`](#cwp) | Watchpoints | Clear one watchpoint, or all | - |
 | [`lwp`](#lwp) | Watchpoints | List active watchpoints | - |
 | [`wp`](#wp) | Watchpoints | Enable / disable a watchpoint | - |
@@ -637,9 +637,11 @@ RDY
 
 A watchpoint, or data breakpoint, stops the CPU when the running program *accesses* a memory location, where a breakpoint stops when execution *reaches* one. Their headline use is tracking down memory corruption: when a byte is being clobbered and you do not know by whom, arm a write watchpoint on it, run, and every hit hands back the program counter of the instruction that wrote it. The culprit reveals itself instead of being guessed at.
 
-The debugger holds up to 16 watchpoints, managed by slot id. They are currently write-only; read watchpoints arrive in a later build. A watchpoint can carry a [condition](#conditions) so it stops only on writes that matter. A hit fires an asynchronous `* WP <id> w <bank>:<addr>=<val> pc=<bank>:<pc>` event and returns the CPU to STOP at the instruction boundary just after the write, with the disasm cursor on the next instruction. The fields are the watchpoint id, the access type (`w`), the bank and address written and the byte value, and the bank and program counter of the instruction that made the write.
+The debugger holds up to 16 watchpoints, managed by slot id. A watchpoint can watch writes, reads, or both, and can carry a [condition](#conditions) so it stops only on the accesses that matter. A hit fires an asynchronous `* WP <id> <a> <bank>:<addr>=<val> pc=<bank>:<pc>` event and returns the CPU to STOP at the instruction boundary just after the access, with the disasm cursor on the next instruction. The fields are the watchpoint id, the access type (`w` for a write, `r` for a read), the bank and address accessed and the byte value written or read, and the bank and program counter of the instruction that made the access.
 
-A watchpoint fires only on writes made by the running CPU. Debugger pokes ([`wmm`](#wmm), [`fil`](#fil)) are deliberately exempt, so inspecting or editing memory never trips your own watchpoints.
+A watchpoint fires only on accesses made by the running CPU. Debugger pokes ([`wmm`](#wmm), [`fil`](#fil)) and the debugger's own reads (the header, [`mem`](#mem), `mem[...]` in a condition) are exempt, so inspecting or editing memory never trips your own watchpoints.
+
+Reads are far more frequent than writes, so a read watchpoint sees much more traffic. A read watchpoint on code or a frequently scanned location fires often; conditions are the way to narrow it.
 
 ---
 
@@ -649,20 +651,20 @@ A watchpoint fires only on writes made by the running CPU. Debugger pokes ([`wmm
 
 `swp` arms a write watchpoint over a single address or an inclusive range. While the CPU runs, the next instruction that writes anywhere in the range stops it and emits the `* WP` event described above. This is the answer to "what is changing this byte?".
 
-Each `swp` takes the lowest free slot and prints the assigned id (`wp N set`). The id is stable for the watchpoint's lifetime, so it keeps referring to the same watchpoint until you delete it. The table holds up to 16 watchpoints; `swp` responds with `ERR watchpoint table full` once it is exhausted. Read access (`r` / `rw`) is reserved for a later build and is rejected for now.
+Each `swp` takes the lowest free slot and prints the assigned id (`wp N set`). The id is stable for the watchpoint's lifetime, so it keeps referring to the same watchpoint until you delete it. The table holds up to 16 watchpoints; `swp` responds with `ERR watchpoint table full` once it is exhausted.
 
-An optional `if <cond>` clause attaches a [condition](#conditions): the watchpoint then stops only on a write for which `<cond>` is true, and the `val`, `addr`, and `is_write` operands describe that write. See [Conditions](#conditions).
+An optional `if <cond>` clause attaches a [condition](#conditions): the watchpoint then stops only on an access for which `<cond>` is true, and the `val`, `addr`, `is_write`, and `is_read` operands describe that access. See [Conditions](#conditions).
 
 **Syntax**
 
 ```text
-swp [w] <bank> <addr> [end] [if <cond>]
+swp [r|w|rw] <bank> <addr> [end] [if <cond>]
 ```
 
-- `[w]` is the optional access type. Only `w` (write) is accepted in this build, and it is the default, so it can be omitted.
+- `[r|w|rw]` is the optional access type: `r` watches reads, `w` watches writes, `rw` watches both. It defaults to `w`, so it can be omitted to watch writes.
 - `<bank>` is the X16 RAM/ROM bank for an address in the `$A000-$FFFF` window. Below that window the address is unbanked and the bank argument is conventionally `00`. A banked watchpoint matches only while the bank it names is the one currently mapped; an unbanked (zero-page / low-RAM) watchpoint always matches.
 - `<addr>` is the 16-bit address. `[end]` is an optional inclusive range end; omit it to watch a single byte.
-- `if <cond>` is an optional [condition expression](#conditions); the watchpoint stops only on a write where it evaluates non-zero.
+- `if <cond>` is an optional [condition expression](#conditions); the watchpoint stops only on an access where it evaluates non-zero.
 
 **Example**
 
@@ -680,7 +682,7 @@ The watchpoint at zero-page `$70` fires when the instruction at `$C1A3` writes `
 
 **Notes**
 
-To watch a banked address, name the bank: `swp 02 a100` watches `$A100` only while RAM bank 2 is mapped. A range is handy for a small structure: `swp 00 0080 008f` covers sixteen bytes.
+To watch a banked address, name the bank: `swp 02 a100` watches `$A100` only while RAM bank 2 is mapped. A range is handy for a small structure: `swp 00 0080 008f` covers sixteen bytes. To watch reads, lead with the access type: `swp r 00 0070` stops when the program reads `$70`, `swp rw 00 0070` on either access.
 
 To stop only on a particular value, add a condition: `swp 00 0070 if val == $ff` ignores every write to `$70` except the one that stores `$FF`. A malformed condition is rejected here, when the watchpoint is set, with `ERR <message>`.
 
@@ -806,10 +808,10 @@ Each operand resolves to an integer read from the machine at the point of the hi
 | `n` `v` `z` `c` `i` `d` | Individual status flags, each `0` or `1` |
 | `mem[<expr>]` | The byte of CPU memory at address `<expr>`, in the currently mapped bank |
 | `addr` | The address being accessed (watchpoints) |
-| `val` | The byte value being written (watchpoints) |
+| `val` | The byte value written or read (watchpoints) |
 | `is_write` `is_read` | The access type, `0` or `1` (watchpoints) |
 
-`addr`, `val`, `is_write`, and `is_read` describe the access that triggered a watchpoint. A breakpoint has no access behind it, so in a breakpoint condition they read as `0`. `is_read` is reserved for read watchpoints and is `0` for now. `mem[...]` reads the live byte at any address: `mem[$70]`, `mem[sp + 1]`.
+`addr`, `val`, `is_write`, and `is_read` describe the access that triggered a watchpoint: on a write `is_write` is `1` and `is_read` is `0`, and on a read the reverse. A breakpoint has no access behind it, so in a breakpoint condition all four read as `0`. `mem[...]` reads the live byte at any address: `mem[$70]`, `mem[sp + 1]`.
 
 ### Operators
 
