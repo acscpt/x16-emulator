@@ -301,6 +301,13 @@ void dbg_continue(void) {
 	}
 	currentMode    = DMODE_RUN;
 	debugCPUClocks = clockticks6502;
+	// Snapshot the instruction about to run. dbg_tick refreshes this before
+	// every later step, but it runs at the top of the tick, before this resume
+	// command is dispatched, so without setting it here a watched read or write
+	// by the first stepped instruction would be attributed to the prior
+	// (stopped) PC instead of the instruction that made the access.
+	cur_instr_pc   = regs.pc;
+	cur_instr_bank = regs.k;
 	timing_init();
 	notify_resume();
 }
@@ -311,6 +318,8 @@ void dbg_step(void) {
 	step_start_pc_bank    = regs.k;
 	step_start_pc_x16Bank = dbg_x16_bank(regs.pc, regs.k);
 	debugCPUClocks        = clockticks6502;
+	cur_instr_pc          = regs.pc;  // attribute the first step (see dbg_continue)
+	cur_instr_bank        = regs.k;
 }
 
 void dbg_step_over(void) {
@@ -323,6 +332,8 @@ void dbg_step_over(void) {
 		step_bp.x16Bank = dbg_x16_bank(regs.pc, regs.k);
 		currentMode     = DMODE_RUN;
 		debugCPUClocks  = clockticks6502;
+		cur_instr_pc    = regs.pc;  // attribute the first step (see dbg_continue)
+		cur_instr_bank  = regs.k;
 		timing_init();
 		notify_resume();
 	} else {

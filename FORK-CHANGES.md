@@ -35,6 +35,8 @@ Newest entries first.
 
 ### Fixed
 
+- Watchpoints attributed an access made by the first instruction after a resume (`cnt` / `stp`) to the previous, stopped program counter. The PC snapshot used for the `* WP` report was taken before the resume command was dispatched; it is now taken at the resume itself. Writes rarely land on the first instruction, so this surfaced mainly once read watchpoints made first-instruction accesses routine.
+
 - `-debugstdio` pipe protocol: an asynchronous event (`* BRK` / `* WP` / `* RES`) that fires while the host is sitting at a prompt now starts on its own line. The prompt carries no trailing newline, so a fast breakpoint or watchpoint hit could previously glue onto it (`x16db > * BRK ...`) and a parsing host would miss the event. A TTY already redrew the prompt line; a pipe now emits a leading newline for the same reason.
 
 - Windows build: static-link winpthread for `midi.c`'s mutexes. It previously linked only transitively via FluidSynth, so `-DENABLE_FLUIDSYNTH=OFF` failed to link.
