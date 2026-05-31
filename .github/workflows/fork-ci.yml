@@ -40,6 +40,11 @@ jobs:
           cd testbench
           python3 x16dbg_smoke.py
           python3 x16dbg_pty.py
+      - name: Tests (upstream selftest, core emulator)
+        run: |
+          cp build/x16emu x16emu        # selftest hardcodes ../x16emu
+          cp /tmp/rom/rom.bin rom.bin   # the emulator finds rom.bin next to itself
+          cd testbench && python3 selftest_fork.py
 
   windows:
     runs-on: windows-2022
