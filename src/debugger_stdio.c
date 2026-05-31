@@ -217,7 +217,7 @@ static void emit_header_view(void) {
 	int      mode  = dbg_get_view_mode();
 	char vbuf[8];
 	if (vbank < 0) strcpy(vbuf, "-");
-	else           snprintf(vbuf, sizeof(vbuf), "%02x", vbank);
+	else           snprintf(vbuf, sizeof(vbuf), "%02x", (uint8_t)vbank);  // a 0-255 bank; cast so the format width is bounded
 	printf("3: [ view: pc=%02x:%04x d=%02x:%04x b=%s %s ]\n",
 	       pc_bank, pc,
 	       (uint8_t)(data >> 16), (uint16_t)(data & 0xFFFF),
