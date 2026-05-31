@@ -141,10 +141,10 @@ uint32_t dbg_clocks_since_resume(void);
 // Watchpoints (data breakpoints)
 // =========================================================================
 //
-// Stop the CPU when the running program accesses a memory address or range.
-// Currently write watchpoints only; read watchpoints arrive in a later
-// build. The check is hooked into the CPU write path (memory.c write6502)
-// and gated by dbg_watch_write_armed so it costs nothing when none are set.
+// Stop the CPU when the running program reads or writes a memory address or
+// range. The check is hooked into the CPU access paths (memory.c read6502 /
+// write6502) and gated by dbg_watch_read_armed / dbg_watch_write_armed so it
+// costs nothing when none are armed.
 
 #define DBG_MAX_WATCHPOINTS 16
 
@@ -175,7 +175,7 @@ int  dbg_watch_add(int x16Bank, uint16_t start, uint16_t end, bool on_read, bool
                    struct dbg_expr *cond, const char *cond_src);
 
 // Compile a condition expression against the debugger's operand vocabulary
-// (registers, flags, mem[...], and in watch context addr/val/is_write).
+// (registers, flags, mem[...], and in watch context addr/val/is_write/is_read).
 // Returns NULL on a parse error, writing a message into errbuf if given.
 struct dbg_expr *dbg_compile_condition(const char *src, char *errbuf, size_t errlen);
 
