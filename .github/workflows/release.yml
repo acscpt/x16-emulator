@@ -128,7 +128,7 @@ jobs:
           path: x16emu-*-macos-${{ matrix.arch }}.tar.gz
 
   publish:
-    needs: [build-linux-x86_64, build-windows-x86_64, build-macos]
+    needs: [build-linux-x86_64, build-windows-x86_64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
