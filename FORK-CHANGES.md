@@ -49,6 +49,8 @@ Newest entries first.
 
 ### Tooling
 
+- Fork CI (`.github/workflows/fork-ci.yml`): builds and runs the debugger test suites (`test_debugger_expr`, `x16dbg_smoke`, `x16dbg_pty`) on Linux, plus a mingw compile check on Windows that catches mingw-only issues. Self-contained: it fetches the ROM from a public x16-rom release asset, with no cross-repo artifact access. Upstream's `build.yml` is left untouched but disabled on the fork, since its ROM/docs artifact pulls from other repos cannot run there.
+
 - Release workflow (`.github/workflows/release.yml`) and process doc (`RELEASING.md`). Pushing an `acscpt.<n>` tag builds Linux x86_64, Windows x86_64, and macOS x86_64/arm64 and publishes a GitHub Release. Packages are lean and ROM-free: emulator plus `makecart`, FluidSynth on, trace off, with notes pointing users to x16-rom for the ROM.
 
 - markdownlint configuration (`.markdownlint.jsonc`).

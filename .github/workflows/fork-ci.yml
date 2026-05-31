@@ -1,0 +1,65 @@
+name: Fork CI
+
+# The fork's own check: build and run the debugger test suites. Self-contained
+# (no cross-repo artifact pulls) -- the ROM comes from a public x16-rom release
+# asset over plain HTTP. Linux builds and runs the tests; Windows is a mingw
+# compile check (it catches mingw-only issues such as -Wformat-truncation that
+# the Linux gcc does not).
+
+on:
+  push:
+    branches: [develop, master]
+  pull_request:
+
+env:
+  CMAKE_FLAGS: -DENABLE_FLUIDSYNTH=ON -DENABLE_TRACE=OFF
+  # A public x16-rom release asset (no token needed) for the test runs.
+  ROM_ZIP_URL: https://github.com/X16Community/x16-rom/releases/download/r49/Release.R49.ROM.Image.zip
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake python3 libsdl2-dev libfluidsynth-dev
+      - name: Build
+        run: |
+          cmake -S . -B build ${CMAKE_FLAGS}
+          cmake --build build -j
+      - name: Fetch a ROM (public release asset) for the tests
+        run: |
+          curl -fsSL "${ROM_ZIP_URL}" -o /tmp/rom.zip
+          unzip -o /tmp/rom.zip rom.bin -d /tmp/rom
+      - name: Tests (expr unit test, stdio smoke, pty line editor)
+        env:
+          X16EMU_PATH: ${{ github.workspace }}/build/x16emu
+          X16ROM_PATH: /tmp/rom/rom.bin
+        run: |
+          ./build/test_debugger_expr
+          cd testbench
+          python3 x16dbg_smoke.py
+          python3 x16dbg_pty.py
+
+  windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git make
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-fluidsynth
+      - name: Build (compile check; catches mingw-specific issues)
+        run: |
+          cmake -S . -B build ${CMAKE_FLAGS}
+          cmake --build build -j
