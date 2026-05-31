@@ -1,0 +1,179 @@
+name: Release
+
+# Publishes an acscpt fork release. Triggered by pushing an `acscpt.<n>` tag
+# (cut from `master`), or manually against an existing such tag.
+#
+# Lean, ROM-free packages: the emulator and makecart only. rom.bin is NOT
+# bundled (the ROM is separately licensed, with proprietary and GPLv3
+# components) and neither are any ROM-derived headers, so trace is off here;
+# it stays a local build feature. FluidSynth (MIDI, LGPL, dynamically linked)
+# is on. See RELEASING.md.
+
+on:
+  push:
+    tags:
+      - "acscpt.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing acscpt.<n> tag to (re)publish"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CMAKE_FLAGS: -DENABLE_FLUIDSYNTH=ON -DENABLE_TRACE=OFF
+
+jobs:
+  build-linux-x86_64:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake python3 libsdl2-dev libfluidsynth-dev
+      - name: Build
+        run: |
+          cmake -S . -B build ${CMAKE_FLAGS}
+          cmake --build build -j
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/x16emu build/makecart dist/
+          tar -C dist -czf "x16emu-${TAG}-linux-x86_64.tar.gz" x16emu makecart
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: x16emu-*-linux-x86_64.tar.gz
+
+  build-windows-x86_64:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git make zip
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-fluidsynth
+      - name: Build
+        run: |
+          cmake -S . -B build ${CMAKE_FLAGS}
+          cmake --build build -j
+      - name: Package (bundle the DLLs the binaries actually need)
+        run: |
+          mkdir -p dist
+          cp build/x16emu.exe build/makecart.exe dist/
+          # Copy every MinGW DLL the executables depend on, resolved by ldd,
+          # so the set tracks the build flags instead of a hand-kept list.
+          for exe in dist/x16emu.exe dist/makecart.exe; do
+            ldd "$exe" | grep -i /mingw64/ | awk '{print $3}'
+          done | sort -u | xargs -I{} cp -v {} dist/
+          (cd dist && zip -j "../x16emu-${TAG}-windows-x86_64.zip" *)
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: x16emu-*-windows-x86_64.zip
+
+  build-macos:
+    # Untested: compiled and uploaded, not run by the maintainer.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-13
+          - arch: arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - name: Install dependencies
+        run: brew install cmake sdl2 fluid-synth
+      - name: Build
+        run: |
+          cmake -S . -B build ${CMAKE_FLAGS}
+          cmake --build build -j
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/x16emu build/makecart dist/
+          tar -C dist -czf "x16emu-${TAG}-macos-${{ matrix.arch }}.tar.gz" x16emu makecart
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: x16emu-*-macos-${{ matrix.arch }}.tar.gz
+
+  publish:
+    needs: [build-linux-x86_64, build-windows-x86_64, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Write release notes
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          cat > notes.md <<'EOF'
+          A fork of the [Commander X16 emulator](https://github.com/X16Community/x16-emulator) adding a headless, scriptable stdio debugger (`-debugstdio`): breakpoints, read/write memory watchpoints, conditional breakpoints and watchpoints, and screen capture. See `FORK-CHANGES.md` for the full list of changes.
+
+          Debugger documentation: the [REPL user guide](__REPO__/blob/__TAG__/docs/debug_repl.md) and the [command reference](__REPO__/blob/__TAG__/docs/debug_repl_commands.md).
+
+          ## You need a ROM (download it separately)
+
+          These builds do **not** include `rom.bin`. The Commander X16 ROM is separately licensed and mixes proprietary (Commodore KERNAL, Microsoft BASIC) and GPLv3 components, so it is not redistributed here. Get it from source:
+
+          - **ROM:** <https://github.com/X16Community/x16-rom/releases>
+          - **User's guide / docs:** <https://github.com/X16Community/x16-docs>
+
+          Then run: `x16emu -rom path/to/rom.bin`
+
+          ## Binaries
+
+          ### Tested
+          - **Linux x86_64** (`...-linux-x86_64.tar.gz`) — needs `libsdl2` and `libfluidsynth` installed (`apt install libsdl2-2.0-0 libfluidsynth3`).
+          - **Windows x86_64** (`...-windows-x86_64.zip`) — self-contained; the required SDL2 and FluidSynth DLLs are bundled.
+
+          ### Untested (compiled by CI, not run by the maintainer)
+          - **macOS x86_64** (`...-macos-x86_64.tar.gz`)
+          - **macOS arm64** (`...-macos-arm64.tar.gz`)
+          - Need `brew install sdl2 fluid-synth`.
+
+          Built with FluidSynth (MIDI) enabled and `-trace` disabled. Trace embeds ROM-derived listings, so it is a local build only feature; build from source with `-DENABLE_TRACE=ON` if you need it.
+          EOF
+          # Point the doc links at this repo and tag (docs frozen at the release).
+          sed -i "s|__REPO__|${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}|g; s|__TAG__|${TAG}|g" notes.md
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --notes-file notes.md \
+            artifacts/*/*

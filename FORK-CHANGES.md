@@ -49,4 +49,6 @@ Newest entries first.
 
 ### Tooling
 
+- Release workflow (`.github/workflows/release.yml`) and process doc (`RELEASING.md`). Pushing an `acscpt.<n>` tag builds Linux x86_64, Windows x86_64, and macOS x86_64/arm64 and publishes a GitHub Release. Packages are lean and ROM-free: emulator plus `makecart`, FluidSynth on, trace off, with notes pointing users to x16-rom for the ROM.
+
 - markdownlint configuration (`.markdownlint.jsonc`).
