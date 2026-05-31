@@ -2,9 +2,13 @@
 
 ## Introduction
 
-The Commander X16 emulator includes an interactive debugger that can pause the running machine and inspect any aspect of it from the CPU  state, RAM and BRAM, the VRAM and video chip to the machine state such as registers, breakpoints and execution steps.
+The Commander X16 emulator includes an interactive debugger that can:
 
-Breakpoints stop the CPU when execution reaches an address and watchpoints stop execution when the running program reads or writes to a specific memory location. Both breakpoints and watchpoints can have an optional condition, so the break or watchpoint triggers when the condition is met.
+- Pause the running machine and inspect any aspect of it from the CPU  state, RAM and BRAM, the VRAM and video chip to the machine state such as registers, breakpoints and execution steps.  
+
+- Breakpoints stop the CPU when execution reaches an address and watchpoints stop execution when the running program reads or writes to a specific memory location. Both breakpoints and watchpoints can have an optional condition, so the break or watchpoint triggers when the condition is met.
+
+- It is also possible to capture the current screen as a PNG from the stdio shell even though the stdio runs headless.
 
 The same debugger drives both the SDL graphical UI (`-debug`) and the stdio shell (`-debugstdio`).
 

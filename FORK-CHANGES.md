@@ -25,6 +25,8 @@ Newest entries first.
 
 - **Conditional breakpoints and watchpoints.** Attach an `if <expr>` clause to a breakpoint or watchpoint so it stops the CPU only when the expression is true at the point of the hit: `sbp 00 c04f if a == $ff`, `swp 00 0070 if val != $00 && is_write`. The condition is a C-style integer expression (arithmetic, bitwise, shift, comparison, and short-circuit logical operators, with C precedence) evaluated on the host against a snapshot of machine state, so it never perturbs the guest. Operands resolve to live registers (`a x y sp pc p`), flags (`n v z c i d`), memory (`mem[<expr>]`), and, for a watchpoint, the access under test (`addr val is_write`). The evaluator is a self-contained parser (`debugger_expr.{c,h}`) with its own unit test; see [`docs/debug_repl_commands.md#conditions`](./docs/debug_repl_commands.md#conditions).
 
+- **`scr`: screenshot command over `-debugstdio`.** Writes a PNG of the current screen and prints the path: `scr /tmp/shot.png`, or bare `scr` for a timestamped file. The image is the composited VERA output (text, tiles, bitmap, sprites). Because `-debugstdio` runs headless, the per-scanline render that normally fills the framebuffer does not run, so `scr` composes a frame from current VERA state on demand; it reads VERA state only and does not perturb the running program. Reuses the existing screenshot path (the Cmd/Super+P key still works in a window), now factored so it is reachable from the REPL.
+
 ### Changed
 
 - Debugger internals refactored into an SDL-free core (`debugger_core.{c,h}`) behind a frontend vtable (`dbg_frontend_t`), so the SDL and stdio frontends share one state machine, breakpoint table, and view-cursor state.

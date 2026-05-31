@@ -53,6 +53,7 @@ This is a per-command reference for everything available at the `x16db >` prompt
 | [`zpr`](#zpr) | Inspection | Show direct-page R0..R15 register pairs | - |
 | [`vrg`](#vrg) | Inspection | VERA state snapshot | - |
 | [`clk`](#clk) | Inspection | Clocks since last resume | visible in panel |
+| [`scr`](#scr) | Capture | Save a PNG screenshot of the screen | Cmd/Super+P (window) |
 | [`hdr`](#hdr) | Header | Show or toggle header lines | - |
 | [`st`](#st) | Header | Full state snapshot | always visible in panels |
 | [`mod`](#mod) | Session | Current mode and PC | visible in panel |
@@ -1298,6 +1299,45 @@ RDY
 The same value is shown as `clk=` on line 2 of the header. `clk` exists for callers that want the count as a standalone parseable line rather than embedded in a header.
 
 **Associated commands**: [`reg`](#reg), [`hdr`](#hdr)
+
+[^ Index](#index)
+
+## Capture
+
+---
+
+### `scr`
+
+**Purpose**
+
+`scr` writes a PNG of the current screen and prints the path it wrote. The image is the composited VERA output exactly as it would appear on a display: text mode, tile or bitmap graphics, both layers, and sprites, whatever the machine is showing. This is the screenshot path for a headless `-debugstdio` session, where there is no window to capture.
+
+Because `-debugstdio` runs headless, the per-scanline render that normally fills the framebuffer does not run. `scr` composes a fresh frame from the current VERA state on demand, so the capture reflects the machine as of the moment you ran it. It reads VERA state only; it does not change anything the running program can observe.
+
+**Syntax**
+
+```text
+scr [path]
+```
+
+- `[path]` is an optional output path. With no path, `scr` writes a timestamped `x16emu-<date>-<time>.png` in the emulator's working directory. The path is a single whitespace-delimited token.
+
+**Example**
+
+```text
+x16db > scr /tmp/elite-dock.png
+/tmp/elite-dock.png
+RDY
+x16db > scr
+x16emu-2026-05-31-15-18-04.png
+RDY
+```
+
+**Notes**
+
+The printed path is the one line of data before `RDY`, so a caller can read it back to locate the file. On a write failure (bad path, no permission) `scr` returns `ERR could not write screenshot to <path>` and writes nothing.
+
+A screenshot taken while the CPU is stopped shows the screen as of the stop. While the CPU is running, it shows the frame composed at the instant of the command.
 
 [^ Index](#index)
 
