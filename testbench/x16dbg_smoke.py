@@ -459,11 +459,11 @@ def main():
 		data, _ = d.cmd("lwp")
 		check("wp off marks it disabled", data == ["1: w 00:0080-008f hits=0 off"], data)
 		d.cmd("wp 1 on")
-		try:
-			d.cmd("swp r 00 0070")
-			check("read watchpoint rejected in write-only build", False, "no ERR")
-		except AssertionError:
-			check("read watchpoint rejected in write-only build", True)
+		d.cmd("swp r 00 0070")
+		data, _ = d.cmd("lwp")
+		check("read watchpoint accepted and lists as r",
+		      "0: r 00:0070 hits=0" in data, data)
+		d.cmd("cwp 0")
 		try:
 			d.cmd("swp 00 0090 if a ==")
 			check("malformed watchpoint condition rejected", False, "no ERR")
@@ -541,6 +541,41 @@ def main():
 		      any(e.startswith("* BRK STP") for e in events)
 		      and not any(e.startswith("* BRK BREAKPOINT") for e in events), events)
 		d.cmd("cbp *")
+
+		print()
+		print("--- read watchpoints ---")
+		# `LDA $0550` reads a watched, otherwise-cold address; the access type
+		# is r and the value is the byte read. $0550 is reported at pc 0500
+		# because the load is the first instruction after the resume.
+
+		# Read watchpoint fires on a load.
+		arm(d, "ad 50 05 db")          # LDA $0550 ; STP
+		d.cmd("wmm 00 0550 cc")        # known value at the watched address
+		d.cmd("swp r 00 0550")
+		events = cnt_until_event(d, "* WP 0 r 00:0550=cc")
+		check("read watchpoint fires with * WP (access type r)",
+		      any(e.startswith("* WP 0 r 00:0550=cc") and "pc=00:0500" in e for e in events),
+		      events)
+		d.cmd("cwp *")
+
+		# Read watchpoint, condition false -> does not fire; routine reaches STP.
+		arm(d, "ad 50 05 db")
+		d.cmd("wmm 00 0550 cc")
+		d.cmd("swp r 00 0550 if val == $bb")
+		events = cnt_until_event(d, "* BRK STP")
+		check("read watchpoint does not fire when condition is false",
+		      any(e.startswith("* BRK STP") for e in events)
+		      and not any(e.startswith("* WP") for e in events), events)
+		d.cmd("cwp *")
+
+		# The is_read / is_write operands reflect the access under test.
+		arm(d, "ad 50 05 db")
+		d.cmd("wmm 00 0550 cc")
+		d.cmd("swp r 00 0550 if is_read && !is_write")
+		events = cnt_until_event(d, "* WP 0 r 00:0550=cc")
+		check("read watchpoint condition can test is_read / is_write",
+		      any(e.startswith("* WP 0 r 00:0550=cc") for e in events), events)
+		d.cmd("cwp *")
 
 		print()
 		print("--- SDL-equivalent stateful commands ---")

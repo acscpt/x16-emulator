@@ -485,15 +485,11 @@ static bool parse_dec(const char *s, int *out) {
 static void cmd_swp(int argc, char **argv) {
 	int  i        = 0;
 	bool on_read  = false;
-	bool on_write = true;  // Phase A default; becomes rw once reads land
+	bool on_write = true;  // default is write-only; `r` / `rw` opt into reads
 	if (argc > 0 && (!strcmp(argv[0], "r") || !strcmp(argv[0], "w") || !strcmp(argv[0], "rw"))) {
 		on_read  = (argv[0][0] == 'r');
 		on_write = (strchr(argv[0], 'w') != NULL);
 		i = 1;
-	}
-	if (on_read) {
-		err_msg("only write watchpoints are supported in this build");
-		return;
 	}
 	int if_at = find_if(argc, argv, i);
 	int nspec = if_at - i;  // bank addr [end]
@@ -501,12 +497,12 @@ static void cmd_swp(int argc, char **argv) {
 	if (nspec < 2 || nspec > 3
 	    || !parse_hex(argv[i], &bank, 0xff)
 	    || !parse_hex(argv[i + 1], &addr, 0xffff)) {
-		err_msg("usage: swp [w] <bank> <addr> [end] [if <cond>]");
+		err_msg("usage: swp [r|w|rw] <bank> <addr> [end] [if <cond>]");
 		return;
 	}
 	end = addr;
 	if (nspec == 3 && !parse_hex(argv[i + 2], &end, 0xffff)) {
-		err_msg("usage: swp [w] <bank> <addr> [end] [if <cond>]");
+		err_msg("usage: swp [r|w|rw] <bank> <addr> [end] [if <cond>]");
 		return;
 	}
 	if (end < addr) {
@@ -1236,7 +1232,7 @@ static void cmd_hlp(int argc, char **argv) {
 	puts("  cbp <bank> <addr> | cbp *           clear a breakpoint, or all");
 	puts("  lbp                                 list breakpoints");
 	puts("watchpoints (up to 16, write-only for now):");
-	puts("  swp [w] <bank> <addr> [end] [if <cond>]  add a write watchpoint");
+	puts("  swp [r|w|rw] <bank> <addr> [end] [if <cond>]  add a watchpoint (default w)");
 	puts("  cwp <id> | cwp *                    clear a watchpoint, or all");
 	puts("  lwp                                 list watchpoints");
 	puts("  wp <id> on|off                      enable/disable a watchpoint");

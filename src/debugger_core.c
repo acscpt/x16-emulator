@@ -60,14 +60,16 @@ static int find_user_bp(int pc, uint8_t bank, int x16Bank) {
 }
 
 // Watchpoints. Slot index is the id; entries persist in their slot until
-// removed. dbg_watch_write_armed is the count of enabled write watchpoints,
-// read directly by memory.c's write6502 as a hot-path guard.
+// removed. dbg_watch_{write,read}_armed are the counts of enabled write and
+// read watchpoints, read directly by memory.c's write6502 / read6502 as
+// hot-path guards.
 static struct watchpoint watch_table[DBG_MAX_WATCHPOINTS];
 int dbg_watch_write_armed = 0;
+int dbg_watch_read_armed  = 0;
 
-// A watchpoint hit latched by the write hook during step6502, surfaced by
-// the next dbg_tick(). have_watch_hit keeps the last hit readable by the
-// frontend after the stop (for the `* WP` event).
+// A watchpoint hit latched by the read/write access hook during step6502,
+// surfaced by the next dbg_tick(). have_watch_hit keeps the last hit readable
+// by the frontend after the stop (for the `* WP` event).
 static bool            watch_pending  = false;
 static dbg_watch_hit_t pending_hit;
 static dbg_watch_hit_t last_hit;
@@ -75,23 +77,27 @@ static bool            have_watch_hit = false;
 
 // Set around debugger pokes (dbg_write_mem / dbg_fill_mem) so their writes,
 // which also go through write6502, do not trip watchpoints. Only genuine
-// CPU writes should fire them.
+// CPU writes should fire them. Reads need no equivalent: the debugger reads
+// through real_read6502 (debugOn), never the hooked public read6502.
 static bool            watch_suppress = false;
 
 // PC of the instruction about to execute, snapshotted before each step so
-// the write hook can report which instruction made the access (regs.pc has
-// already advanced by the time write6502 runs).
+// the access hook can report which instruction made the read or write (regs.pc
+// has already advanced by the time write6502 / read6502 runs).
 static uint16_t cur_instr_pc   = 0;
 static uint8_t  cur_instr_bank = 0;
 
 static void recompute_watch_armed(void) {
-	int n = 0;
+	int nw = 0, nr = 0;
 	for (int i = 0; i < DBG_MAX_WATCHPOINTS; i++) {
-		if (watch_table[i].in_use && watch_table[i].enabled && watch_table[i].on_write) {
-			n++;
+		if (!watch_table[i].in_use || !watch_table[i].enabled) {
+			continue;
 		}
+		if (watch_table[i].on_write) nw++;
+		if (watch_table[i].on_read)  nr++;
 	}
-	dbg_watch_write_armed = n;
+	dbg_watch_write_armed = nw;
+	dbg_watch_read_armed  = nr;
 }
 
 // View-cursor state (see debugger_core.h "View-cursor state" section).
@@ -162,6 +168,7 @@ struct cond_ctx {
 	uint16_t wp_addr;
 	uint8_t  wp_val;
 	bool     wp_is_write;
+	bool     wp_is_read;
 };
 
 static const char *const cond_vars[] = {
@@ -199,7 +206,7 @@ static int64_t cond_resolve(void *ctx, const char *name, bool indexed, int64_t i
 	if (!strcmp(name, "addr"))     return c->wp_addr;
 	if (!strcmp(name, "val"))      return c->wp_val;
 	if (!strcmp(name, "is_write")) return c->wp_is_write ? 1 : 0;
-	if (!strcmp(name, "is_read"))  return 0; // write-only watchpoints for now
+	if (!strcmp(name, "is_read"))  return c->wp_is_read ? 1 : 0;
 	return 0;
 }
 
@@ -219,6 +226,7 @@ static bool cond_passes(struct dbg_expr *cond, bool have_access, uint16_t addr, 
 		c.wp_addr     = addr;
 		c.wp_val      = val;
 		c.wp_is_write = is_write;
+		c.wp_is_read  = !is_write;
 	}
 	return dbg_expr_eval(cond, cond_resolve, &c) != 0;
 }
@@ -467,6 +475,7 @@ void dbg_watch_clear_all(void) {
 		watch_table[i].in_use = false;
 	}
 	dbg_watch_write_armed = 0;
+	dbg_watch_read_armed  = 0;
 }
 
 bool dbg_watch_set_enabled(int id, bool enabled) {
@@ -523,6 +532,39 @@ void dbg_watch_on_write(uint16_t addr, uint8_t value) {
 		w->hits++;
 		pending_hit.id       = i;
 		pending_hit.is_write = true;
+		pending_hit.x16Bank  = eff;
+		pending_hit.addr     = addr;
+		pending_hit.value    = value;
+		pending_hit.pc       = cur_instr_pc;
+		pending_hit.pc_bank  = cur_instr_bank;
+		watch_pending = true;
+		return;
+	}
+}
+
+void dbg_watch_on_read(uint16_t addr, uint8_t value) {
+	// Mirror dbg_watch_on_write for the read path. The debugger's own reads use
+	// real_read6502 (debugOn) and never reach here, so there is no poke to
+	// suppress; only the pending-hit guard (first access per instruction wins)
+	// and the shared watch_suppress apply.
+	if (watch_suppress || watch_pending) {
+		return;
+	}
+	int eff = dbg_x16_bank(addr, regs.k);
+	for (int i = 0; i < DBG_MAX_WATCHPOINTS; i++) {
+		struct watchpoint *w = &watch_table[i];
+		if (!w->in_use || !w->enabled || !w->on_read) {
+			continue;
+		}
+		if (addr < w->start || addr > w->end || w->x16Bank != eff) {
+			continue;
+		}
+		if (!cond_passes(w->cond, true, addr, value, false)) {
+			continue; // condition false; another watch may still match
+		}
+		w->hits++;
+		pending_hit.id       = i;
+		pending_hit.is_write = false;
 		pending_hit.x16Bank  = eff;
 		pending_hit.addr     = addr;
 		pending_hit.value    = value;

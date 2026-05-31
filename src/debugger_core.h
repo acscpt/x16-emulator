@@ -216,9 +216,16 @@ bool dbg_get_watch_hit(dbg_watch_hit_t *out);
 // that the next dbg_tick() surfaces; it does not stop mid-instruction.
 void dbg_watch_on_write(uint16_t addr, uint8_t value);
 
-// Fast-path guard: count of enabled write watchpoints. memory.c reads this
-// directly so the hot path is one load + branch when nothing is armed.
+// CPU read-path hook (memory.c read6502). Call only when dbg_watch_read_armed
+// is nonzero. Mirrors the write hook. The debugger's own reads go through
+// real_read6502 (debugOn) and never reach here, so unlike the write path there
+// is no poke to suppress.
+void dbg_watch_on_read(uint16_t addr, uint8_t value);
+
+// Fast-path guards: counts of enabled write / read watchpoints. memory.c reads
+// these directly so the hot path is one load + branch when nothing is armed.
 extern int dbg_watch_write_armed;
+extern int dbg_watch_read_armed;
 
 // =========================================================================
 // State snapshots

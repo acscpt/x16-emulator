@@ -200,7 +200,15 @@ read6502(uint16_t address, uint8_t bank) {
       }
     }
 
-	return real_read6502(address, bank, false, USE_CURRENT_X16_BANK);
+	uint8_t value = real_read6502(address, bank, false, USE_CURRENT_X16_BANK);
+
+	// Memory watchpoints: cheap guard (one load + branch) when none armed,
+	// mirroring write6502. Only the CPU read path reaches here; the debugger's
+	// own reads use real_read6502 directly (debugOn) and never trip it.
+	if (dbg_watch_read_armed) {
+		dbg_watch_on_read(address, value);
+	}
+	return value;
 }
 
 uint8_t
