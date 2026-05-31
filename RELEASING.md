@@ -24,13 +24,15 @@ The banner then reads `Commander X16 Emulator r50 (next-acscpt.1), <git-rev>`.
 - `next` is upstream's own codename for the unreleased dev line this descends from; `acscpt.<n>` is the fork build number, bumped per release.
 - This stamp is applied **on `master` only**. `develop` keeps upstream's `VER_NAME`, so develop builds report plain `r50 (next)` and are identified as the fork by their git revision.
 
-## Cutting a release `acscpt.<n>`
+## Cutting a release `r50-next-acscpt.<n>`
+
+The release tag mirrors the banner: `r<VER>-<VER_NAME>`, e.g. `r50-next-acscpt.1`. It is the GitHub Release title too.
 
 1. **On `develop`**, finalise the changelog (a fork-only file, so no upstream conflict): promote `## [Unreleased]` in `FORK-CHANGES.md` to `## [acscpt.<n>] - <YYYY-MM-DD>`, and add a fresh empty `## [Unreleased]` above it. Commit and push.
 
-2. **On `master`**, merge `develop`, then make the release commit: set `VER_NAME` to `"next-acscpt.<n>"` (and the name inside `VER_INFO`) in `src/version.h`, commit, `git tag acscpt.<n>`, and push `master` plus the tag.
+2. **On `master`**, merge `develop`, then make the release commit: set `VER_NAME` to `"next-acscpt.<n>"` (and the name inside `VER_INFO`) in `src/version.h`, commit, `git tag r50-next-acscpt.<n>`, and push `master` plus the tag.
 
-3. **CI publishes.** `.github/workflows/release.yml` triggers on the `acscpt.*` tag, builds the platforms, and creates the GitHub Release with the binaries attached. It can also be re-run via *workflow_dispatch* against an existing tag.
+3. **CI publishes.** `.github/workflows/release.yml` triggers on the tag (it matches `*acscpt*`), builds the platforms, and creates the GitHub Release with the binaries attached. The Linux and Windows builds gate publishing; macOS is best-effort and never blocks. It can also be re-run via *workflow_dispatch* against an existing tag.
 
 `RELEASES.md` is upstream's per-release log: leave it untouched. Fork release notes live in `FORK-CHANGES.md`.
 

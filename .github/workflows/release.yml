@@ -1,7 +1,7 @@
 name: Release
 
-# Publishes an acscpt fork release. Triggered by pushing an `acscpt.<n>` tag
-# (cut from `master`), or manually against an existing such tag.
+# Publishes an acscpt fork release. Triggered by pushing a fork release tag
+# (e.g. r50-next-acscpt.1, cut from `master`), or manually against such a tag.
 #
 # Lean, ROM-free packages: the emulator and makecart only. rom.bin is NOT
 # bundled (the ROM is separately licensed, with proprietary and GPLv3
@@ -12,11 +12,13 @@ name: Release
 on:
   push:
     tags:
-      - "acscpt.*"
+      # Fork release tags mirror the banner, e.g. r50-next-acscpt.1. Upstream's
+      # own tags (r48/r49/r50) contain no "acscpt", so this never fires on a sync.
+      - "*acscpt*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing acscpt.<n> tag to (re)publish"
+        description: "Existing fork tag to (re)publish, e.g. r50-next-acscpt.1"
         required: true
 
 permissions:
