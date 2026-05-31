@@ -668,7 +668,7 @@ def main():
 		                                       and any("bp" in l for l in data),
 		      data)
 
-	# bail exit code test runs in a separate process — the X16dbg context
+	# bail exit code test runs in a separate process -- the X16dbg context
 	# manager always quits cleanly, so we can't trigger bail from within it.
 	print()
 	print("--- bail exit code ---")

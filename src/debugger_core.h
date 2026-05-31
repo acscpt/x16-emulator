@@ -276,7 +276,7 @@ typedef struct dbg_stack_entry {
 
 void dbg_get_stack(dbg_stack_entry_t *out, int count);
 
-// VERA state snapshot — the same fields the SDL VERA panel renders.
+// VERA state snapshot -- the same fields the SDL VERA panel renders.
 typedef struct dbg_vera_snapshot {
 	uint32_t addr0;
 	uint32_t addr1;

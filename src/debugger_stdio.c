@@ -311,7 +311,7 @@ static bool parse_nudge(const char *s, uint32_t default_step, int32_t *out_signe
 
 static bool quit_requested = false;
 
-// Forward decl — defined later, used by both cmd_mem and cmd_vmr.
+// Forward decl -- defined later, used by both cmd_mem and cmd_vmr.
 static void print_hex_ascii_line(uint32_t addr, int addr_width, const uint8_t *bytes, int line);
 
 // ---------------------------------------------------------------------------
