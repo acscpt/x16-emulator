@@ -420,16 +420,23 @@ def main():
 		      any(e.startswith("* BRK BREAKPOINT 00 0502") for e in events), events)
 		d.cmd("cbp *")
 
-		# A breakpoint at a ROM-range address ($A000+) must fire too. The stored
-		# x16Bank has to match what the hit test computes for that address, or a
-		# banked breakpoint silently never triggers. $c010 holds a two-byte
-		# instruction, so running from there reaches the boundary at $c012.
+		# A breakpoint in the banked $A000+ window must store the named bank as
+		# its x16Bank, not -1; the bug stored -1 for every address, so the hit
+		# test (which compares the live bank for the address) could never match
+		# a banked breakpoint. Assert the stored x16Bank via `st`, which is
+		# deterministic: an address below $A000 stores -1, one in the banked
+		# window stores the named bank. (A live fire test in the banked window
+		# is not deterministic here, because the bank mapped at $A000 is mutable
+		# and the kernal changes it under a free-running CPU.)
 		d.cmd("brk")
-		d.cmd("srg pc c010")
-		d.cmd("sbp 00 c012")
-		events = cnt_until_event(d, "* BRK BREAKPOINT 00 c012")
-		check("breakpoint in the ROM range fires",
-		      any(e.startswith("* BRK BREAKPOINT 00 c012") for e in events), events)
+		d.cmd("sbp 00 0502")   # unbanked: x16bank -1
+		d.cmd("sbp 02 a100")   # banked window: x16bank 2
+		data, _ = d.cmd("st")
+		bp_lines = [l.split("bp", 1)[1].strip() for l in data if l.startswith("bp ")]
+		check("unbanked breakpoint stores x16bank=-1",
+		      any("00:0502" in l and "x16bank=-1" in l for l in bp_lines), bp_lines)
+		check("banked-window breakpoint stores the named bank (x16bank=2)",
+		      any("02:a100" in l and "x16bank=2" in l for l in bp_lines), bp_lines)
 		d.cmd("cbp *")
 		# These tests left the PC inside the injected routine; reset the CPU so
 		# the next section starts from a clean, free-running state.
