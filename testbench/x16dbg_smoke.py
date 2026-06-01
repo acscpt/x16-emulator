@@ -419,6 +419,18 @@ def main():
 		check("re-enabled breakpoint fires again",
 		      any(e.startswith("* BRK BREAKPOINT 00 0502") for e in events), events)
 		d.cmd("cbp *")
+
+		# A breakpoint at a ROM-range address ($A000+) must fire too. The stored
+		# x16Bank has to match what the hit test computes for that address, or a
+		# banked breakpoint silently never triggers. $c010 holds a two-byte
+		# instruction, so running from there reaches the boundary at $c012.
+		d.cmd("brk")
+		d.cmd("srg pc c010")
+		d.cmd("sbp 00 c012")
+		events = cnt_until_event(d, "* BRK BREAKPOINT 00 c012")
+		check("breakpoint in the ROM range fires",
+		      any(e.startswith("* BRK BREAKPOINT 00 c012") for e in events), events)
+		d.cmd("cbp *")
 		# These tests left the PC inside the injected routine; reset the CPU so
 		# the next section starts from a clean, free-running state.
 		d.cmd("rst")

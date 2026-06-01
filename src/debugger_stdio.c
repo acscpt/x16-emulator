@@ -415,7 +415,12 @@ static void cmd_sbp(int argc, char **argv) {
 	bool failed;
 	struct dbg_expr *cond = compile_if(argc, argv, if_at, src, &failed);
 	if (failed) return;
-	struct breakpoint bp = { .pc = (int)addr, .bank = (uint8_t)bank, .x16Bank = -1, .cond = cond };
+	// Below the banked window the address is unbanked (x16Bank -1); in the
+	// $A000-$FFFF window it is the named bank. This must match what
+	// dbg_x16_bank reports at hit time, or the breakpoint never fires for a
+	// banked (ROM or banked-RAM) address.
+	int x16Bank = (addr >= 0xA000) ? (int)bank : -1;
+	struct breakpoint bp = { .pc = (int)addr, .bank = (uint8_t)bank, .x16Bank = x16Bank, .cond = cond };
 	strncpy(bp.cond_src, src, DBG_COND_MAX - 1);
 	bp.cond_src[DBG_COND_MAX - 1] = '\0';
 	if (!dbg_breakpoint_add(bp)) {  // frees cond on failure
@@ -494,9 +499,9 @@ static void cmd_bp(int argc, char **argv) {
 		return;
 	}
 
-	// cmd_sbp stores every breakpoint with x16Bank -1 regardless of address,
-	// so match on -1 here to find it.
-	if (!dbg_breakpoint_set_enabled((int)addr, (uint8_t)bank, -1, on)) {
+	// Compute x16Bank the same way cmd_sbp stores it, so the lookup matches.
+	int x16Bank = (addr >= 0xA000) ? (int)bank : -1;
+	if (!dbg_breakpoint_set_enabled((int)addr, (uint8_t)bank, x16Bank, on)) {
 		err_msg("no such breakpoint");
 		return;
 	}
