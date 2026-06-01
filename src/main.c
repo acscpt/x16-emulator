@@ -888,7 +888,7 @@ main(int argc, char **argv)
 			debugger_enabled = true;
 			if (argc && argv[0][0] != '-') {
 				uint32_t bpVal = (uint32_t)strtol(argv[0], NULL, 16);
-				struct breakpoint bp;
+				struct breakpoint bp = {0};
 				if (bpVal < 0xA000) {
 					bp.pc = bpVal;
 					bp.bank = 0;
@@ -914,7 +914,7 @@ main(int argc, char **argv)
 			headless            = true;       // skip SDL init; existing !headless guard handles it
 			if (argc && argv[0][0] != '-') {
 				uint32_t bpVal = (uint32_t)strtol(argv[0], NULL, 16);
-				struct breakpoint bp;
+				struct breakpoint bp = {0};
 				if (bpVal < 0xA000) {
 					bp.pc = bpVal;
 					bp.bank = 0;

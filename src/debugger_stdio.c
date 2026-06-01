@@ -242,7 +242,7 @@ static void emit_header(void) {
 	if (hdr_bp_on && dbg_breakpoint_count() > 0) emit_header_bp();
 }
 
-// Per-input prompt. The header (1–4 bracketed lines) precedes it. The
+// Per-input prompt. The header (1-4 bracketed lines) precedes it. The
 // prompt itself has no trailing newline so a host harness can sync on
 // the byte pattern "x16db > " (read-until-suffix-match); a terminal
 // user sees a classic shell-style prompt they type their next command
@@ -465,7 +465,40 @@ static void cmd_lbp(int argc, char **argv) {
 		struct breakpoint bp = dbg_breakpoint_get(i);
 		printf("%02x: %04x", bp.bank, (uint16_t)bp.pc);
 		if (bp.cond_src[0]) printf("  if %s", bp.cond_src);
+		if (!bp.enabled) printf(" off");
 		printf("\n");
+	}
+	rdy();
+}
+
+// bp <bank> <addr> on|off enables or disables a breakpoint without removing
+// it, mirroring `wp <id> on|off` for watchpoints. A disabled breakpoint keeps
+// its definition and condition but does not stop the CPU.
+static void cmd_bp(int argc, char **argv) {
+	uint32_t bank, addr;
+	bool on;
+
+	// Parse: exactly bank, addr, and an on/off keyword.
+	if (argc != 3
+	    || !parse_hex(argv[0], &bank, 0xff)
+	    || !parse_hex(argv[1], &addr, 0xffff)) {
+		err_msg("usage: bp <bank> <addr> on|off");
+		return;
+	}
+	if (!strcmp(argv[2], "on")) {
+		on = true;
+	} else if (!strcmp(argv[2], "off")) {
+		on = false;
+	} else {
+		err_msg("usage: bp <bank> <addr> on|off");
+		return;
+	}
+
+	// cmd_sbp stores every breakpoint with x16Bank -1 regardless of address,
+	// so match on -1 here to find it.
+	if (!dbg_breakpoint_set_enabled((int)addr, (uint8_t)bank, -1, on)) {
+		err_msg("no such breakpoint");
+		return;
 	}
 	rdy();
 }
@@ -876,7 +909,11 @@ static void cmd_mod(int argc, char **argv) {
 static void cmd_ver(int argc, char **argv) {
 	(void)argv;
 	if (argc != 0) { err_msg("ver takes no args"); return; }
-	printf("proto=1\n");
+	// proto 2: added `bp <bank> <addr> on|off` (breakpoint enable/disable);
+	// lbp now appends " off" for a disabled breakpoint; re-adding a breakpoint
+	// at an existing address replaces it (updating its condition) rather than
+	// being a no-op.
+	printf("proto=2\n");
 	rdy();
 }
 
@@ -1251,6 +1288,7 @@ static void cmd_hlp(int argc, char **argv) {
 	puts("  sbp <bank> <addr> [if <cond>]       add a user breakpoint");
 	puts("  cbp <bank> <addr> | cbp *           clear a breakpoint, or all");
 	puts("  lbp                                 list breakpoints");
+	puts("  bp <bank> <addr> on|off             enable/disable a breakpoint");
 	puts("watchpoints (up to 16, write-only for now):");
 	puts("  swp [r|w|rw] <bank> <addr> [end] [if <cond>]  add a watchpoint (default w)");
 	puts("  cwp <id> | cwp *                    clear a watchpoint, or all");
@@ -1317,6 +1355,7 @@ static const struct {
 	{"sbp",  cmd_sbp},
 	{"cbp",  cmd_cbp},
 	{"lbp",  cmd_lbp},
+	{"bp",   cmd_bp},
 	// watchpoints (data breakpoints)
 	{"swp",  cmd_swp},
 	{"cwp",  cmd_cwp},
@@ -1503,7 +1542,7 @@ static int stdio_tick(void) {
 	// or STOP (a command finished and any state-transition events flushed).
 	// Hold the prompt during STEP -- the prompt should follow the upcoming
 	// step-completion event, so a host doing `cmd("stp")` reads `RDY` +
-	// `* BRK STEP …` + `> ` in one batch.
+	// `* BRK STEP ...` + `> ` in one batch.
 	if (produced_output && dbg_get_mode() != DMODE_STEP) {
 		emit_prompt();
 	}

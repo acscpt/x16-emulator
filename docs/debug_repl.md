@@ -122,7 +122,7 @@ Four pieces of cursor state appear on line 3 of the header:
 
 - **Disasm cursor** (`pc=` in the header). Where the next disassembly starts.
 - **Data cursor** (`d=`). Where the next memory dump starts.
-- **View bank** (`b=`). Which X16 RAM or ROM bank the data dump shows in the $A000–$FFFF window. A `-` means "follow the CPU's currently-selected bank".
+- **View bank** (`b=`). Which X16 RAM or ROM bank the data dump shows in the $A000-$FFFF window. A `-` means "follow the CPU's currently-selected bank".
 - **Mode** (`RAM` or `VRAM`). Which address space the data cursor refers to.
 
 ### Moving the cursor
@@ -153,7 +153,7 @@ The `home` command is the manual version of this snap, useful after navigating a
 
 ### The view-bank override
 
-The X16 maps a RAM bank or a ROM bank into the $A000–$FFFF window of CPU address space; the CPU's $00 and $01 registers select which. The view bank is an override for that mapping inside the data dump: `m 5:a000` reads bank 5 at $A000 regardless of which bank the CPU currently has selected, and the CPU's bank registers are not touched. Subsequent bare `m` commands continue to show bank 5 until `b view follow` resets to "follow CPU".
+The X16 maps a RAM bank or a ROM bank into the $A000-$FFFF window of CPU address space; the CPU's $00 and $01 registers select which. The view bank is an override for that mapping inside the data dump: `m 5:a000` reads bank 5 at $A000 regardless of which bank the CPU currently has selected, and the CPU's bank registers are not touched. Subsequent bare `m` commands continue to show bank 5 until `b view follow` resets to "follow CPU".
 
 This is the typical reason for setting a view bank: peek at code or data in a bank the CPU is not currently executing from, without disturbing CPU state.
 

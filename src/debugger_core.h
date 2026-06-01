@@ -29,16 +29,20 @@
 struct dbg_expr; // condition expression (debugger_expr.h)
 
 // Breakpoint shape. Preserved from the pre-refactor debugger.h, plus an
-// optional condition.
+// optional condition and an enable flag.
 //   pc        16-bit instruction address; -1 means "no breakpoint"
 //   bank      CPU program bank (.K); always 0 on 65C02
 //   x16Bank   X16 RAM/ROM bank in the $A000-$FFFF window, else -1
+//   enabled   a disabled breakpoint stays in the table but does not stop the
+//             CPU; dbg_breakpoint_add forces this true so callers using a
+//             designated initializer get an enabled breakpoint by default
 //   cond      compiled `if` condition, or NULL; the breakpoint table owns it
 //   cond_src  the condition's source text (for listing), empty if none
 struct breakpoint {
 	int             pc;
 	uint8_t         bank;
 	int             x16Bank;
+	bool            enabled;
 	struct dbg_expr *cond;
 	char            cond_src[DBG_COND_MAX];
 };
@@ -107,13 +111,21 @@ void dbg_reset_cpu(void);
 // Maximum number of simultaneous user breakpoints.
 #define DBG_MAX_BREAKPOINTS 16
 
-// Add a breakpoint to the table. Adding one already present is a no-op.
-// Returns false if bp.pc < 0 or the table is full, true otherwise.
+// Add a breakpoint to the table, forcing it enabled. Adding one whose
+// (pc, bank, x16Bank) is already present replaces the existing entry (its
+// condition and enabled state included) rather than ignoring the new one, so
+// re-adding with a different `if` clause updates the condition. Returns false
+// if bp.pc < 0 or the table is full, true otherwise.
 bool dbg_breakpoint_add(struct breakpoint bp);
 
 // Remove the breakpoint matching bp exactly (pc, bank, x16Bank). Returns
 // true if one was removed, false if no exact match was present.
 bool dbg_breakpoint_remove(struct breakpoint bp);
+
+// Enable or disable the breakpoint at (pc, bank, x16Bank). A disabled
+// breakpoint stays in the table but does not stop the CPU. Returns false if no
+// breakpoint matches.
+bool dbg_breakpoint_set_enabled(int pc, uint8_t bank, int x16Bank, bool enabled);
 
 // Remove every user breakpoint.
 void dbg_breakpoint_clear_all(void);

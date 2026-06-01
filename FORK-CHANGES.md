@@ -9,6 +9,20 @@ Newest entries first.
 
 ## [Unreleased]
 
+### Added
+
+- **Breakpoint enable/disable: `bp <bank> <addr> on|off`.** Mute a breakpoint without removing it, the same way `wp <id> on|off` mutes a watchpoint, so one breakpoint can be silenced at a time while bisecting. A disabled breakpoint keeps its definition and condition, does not stop the CPU, and still shows in `lbp` marked ` off`.
+
+### Changed
+
+- **`sbp` at an existing address now replaces that breakpoint in place** instead of being a no-op, so re-issuing `sbp` with a different `if` clause updates the condition (and re-issuing with none clears it). The entry keeps its position in the list.
+
+- **`-debugstdio` protocol version is now `proto=2`** (was `proto=1`), reflecting the `bp` command, the `lbp` ` off` marker, and the `sbp` replace-on-readd behaviour.
+
+### Fixed
+
+- Two `-debugstdio` startup-breakpoint structs in `main.c` were built uninitialised, leaving the condition pointer as garbage that a later breakpoint hit or `cbp` could dereference. They are now zero-initialised.
+
 ## [acscpt.1] - 2026-05-31
 
 ### Added

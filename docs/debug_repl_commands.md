@@ -36,6 +36,7 @@ This is a per-command reference for everything available at the `x16db >` prompt
 | [`sbp`](#sbp) | Breakpoints | Add a user breakpoint, optionally [conditional](#conditions) | F9 at cursor |
 | [`cbp`](#cbp) | Breakpoints | Clear one breakpoint, or all | F9 again at cursor |
 | [`lbp`](#lbp) | Breakpoints | List active breakpoints | visible in panel |
+| [`bp`](#bp) | Breakpoints | Enable / disable a breakpoint | - |
 | [`swp`](#swp) | Watchpoints | Add a read/write watchpoint, optionally [conditional](#conditions) | - |
 | [`cwp`](#cwp) | Watchpoints | Clear one watchpoint, or all | - |
 | [`lwp`](#lwp) | Watchpoints | List active watchpoints | - |
@@ -255,14 +256,14 @@ m +<off> | -<off>
 
 ```text
 x16db > m 0200
-   00:0200  20 04 c0 00  00 00 00 00  00 00 00 00  00 00 00 00  . ..............
-   00:0210  ...
+0200: 20 04 c0 00 00 00 00 00 00 00 00 00 00 00 00 00   ...............
+0210: ...
 RDY
 x16db > m +
-   00:0300  ...
+0300: ...
 RDY
 x16db > m 5:a000
-   05:a000  ...
+a000: ...
 RDY
 ```
 
@@ -337,10 +338,10 @@ v +<off> | -<off>
 
 ```text
 x16db > v 0
-   00000  10 20 30 40  ...
+00000: 10 20 30 40 ...
 RDY
 x16db > v +
-   00200  ...
+00200: ...
 RDY
 ```
 
@@ -376,7 +377,7 @@ b view follow
 x16db > b view 5
 RDY
 x16db > m a000
-   05:a000  ...
+a000: ...
 RDY
 x16db > b view follow
 RDY
@@ -447,8 +448,8 @@ f <addr> <val> [<count>] [<incr>]
 x16db > f 0200 00 100 1
 RDY
 x16db > m 0200
-   00:0200  00 01 02 03  04 05 06 07  08 09 0a 0b  0c 0d 0e 0f  ................
-   00:0210  10 11 12 ...
+0200: 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f  ................
+0210: 10 11 12 ...
 RDY
 ```
 
@@ -532,7 +533,7 @@ The debugger holds up to 16 user breakpoints. The three commands in this categor
 
 `sbp` adds a user breakpoint at an explicit bank and address. Once set, the CPU stops with `* BRK BREAKPOINT <bank> <addr>` the next time execution reaches that location, whether during a `cnt`-resumed run or as the result of a step. This is the form to use from a script or any context where the address is known up front; for a one-keystroke toggle at the disasm cursor instead, see [`tb`](#tb).
 
-Each `sbp` adds to the table rather than replacing it; re-adding the same bank and address is a no-op. The table holds up to 16 breakpoints, and `sbp` responds with `ERR breakpoint table full` once it is exhausted.
+Each `sbp` adds to the table, keyed by address. Re-adding at an address that already holds a breakpoint replaces that entry in place, keeping its position in the list but taking the new command's condition (or clearing the condition when the new command has no `if` clause). This is how a breakpoint's condition is changed: re-issue `sbp` for the same address with the new clause. The table holds up to 16 breakpoints, and `sbp` responds with `ERR breakpoint table full` once it is exhausted.
 
 An optional `if <cond>` clause attaches a [condition](#conditions): the breakpoint then stops the CPU only when `<cond>` is true at that address, and is otherwise transparent. See [Conditions](#conditions) for the expression grammar.
 
@@ -605,7 +606,7 @@ To clear whatever is set at the disasm cursor without typing the address, use [`
 
 **Purpose**
 
-`lbp` lists the active breakpoints, one `<bank>: <addr>` line each (hex), in the order they were added, followed by `RDY`. A breakpoint with a [condition](#conditions) appends `  if <cond>` to its line. When none are set the response is just `RDY` with no data lines, so the line count is itself the breakpoint count.
+`lbp` lists the active breakpoints, one `<bank>: <addr>` line each (hex), in the order they were added, followed by `RDY`. A breakpoint with a [condition](#conditions) appends `  if <cond>` to its line, and a disabled breakpoint (see [`bp`](#bp)) appends ` off`. When none are set the response is just `RDY` with no data lines, so the line count is itself the breakpoint count.
 
 **Syntax**
 
@@ -631,6 +632,44 @@ RDY
 ```
 
 **Associated commands**: [`sbp`](#sbp), [`cbp`](#cbp), [`tb`](#tb)
+
+[^ Index](#index)
+
+---
+
+### `bp`
+
+**Purpose**
+
+`bp <bank> <addr> on` and `bp <bank> <addr> off` enable or disable the breakpoint at the given address without removing it. A disabled breakpoint keeps its definition and condition but does not stop the CPU, which is the natural way to bisect a problem: mute one breakpoint at a time rather than deleting and retyping it. This mirrors [`wp`](#wp) for watchpoints. `bp` responds with `ERR no such breakpoint` if no breakpoint is set at that address.
+
+**Syntax**
+
+```text
+bp <bank> <addr> on | off
+```
+
+- `<bank>` and `<addr>` identify the breakpoint, the same way they were given to [`sbp`](#sbp).
+
+**Example**
+
+```text
+x16db > sbp 00 c010
+RDY
+x16db > bp 00 c010 off
+RDY
+x16db > lbp
+00: c010 off
+RDY
+x16db > bp 00 c010 on
+RDY
+```
+
+**Notes**
+
+A disabled breakpoint still appears in [`lbp`](#lbp), marked ` off`, so it is visible while muted. To remove a breakpoint outright rather than mute it, use [`cbp`](#cbp).
+
+**Associated commands**: [`sbp`](#sbp), [`cbp`](#cbp), [`lbp`](#lbp), [`wp`](#wp)
 
 [^ Index](#index)
 
@@ -880,8 +919,8 @@ mem <bank> <addr> <count>
 
 ```text
 x16db > mem 00 0200 20
-   00:0200  20 04 c0 00  00 00 00 00  00 00 00 00  00 00 00 00  . ..............
-   00:0210  00 00 00 00  00 00 00 00  00 00 00 00  00 00 00 00  ................
+0200: 20 04 c0 00 00 00 00 00 00 00 00 00 00 00 00 00   ...............
+0210: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
 RDY
 ```
 
@@ -917,7 +956,7 @@ wmm <bank> <addr> <hex>...
 x16db > wmm 00 0200 de ad be ef
 RDY
 x16db > mem 00 0200 4
-   00:0200  de ad be ef                                          ....
+0200: de ad be ef                                      ....
 RDY
 ```
 
@@ -1020,8 +1059,8 @@ vmr <addr> <count>
 
 ```text
 x16db > vmr 0 20
-   00000  10 20 30 40  50 60 70 80  90 a0 b0 c0  d0 e0 f0 00  . 0@P`p.........
-   00010  ...
+00000: 10 20 30 40 50 60 70 80 90 a0 b0 c0 d0 e0 f0 00  . 0@P`p.........
+00010: ...
 RDY
 ```
 
@@ -1052,7 +1091,7 @@ vmw <addr> <hex>...
 x16db > vmw 00000 de ad be ef
 RDY
 x16db > vmr 0 4
-   00000  de ad be ef                                          ....
+00000: de ad be ef                                      ....
 RDY
 ```
 
