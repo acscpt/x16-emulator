@@ -261,7 +261,8 @@ dbg_tick_t dbg_tick(void) {
 	if (currentMode != DMODE_STOP) {
 		bool hit_user = false;
 		for (int i = 0; i < user_bp_count; i++) {
-			if (hit_bp(regs.pc, regs.k, user_bp[i])
+			if (user_bp[i].enabled
+			    && hit_bp(regs.pc, regs.k, user_bp[i])
 			    && cond_passes(user_bp[i].cond, false, 0, 0, false)) {
 				hit_user = true;
 				break;
@@ -360,15 +361,36 @@ bool dbg_breakpoint_add(struct breakpoint bp) {
 		if (bp.cond) dbg_expr_free(bp.cond);
 		return false;
 	}
-	if (find_user_bp(bp.pc, bp.bank, bp.x16Bank) >= 0) {
-		if (bp.cond) dbg_expr_free(bp.cond); // already present; keep the existing one
+
+	// A breakpoint is always live when added; force the flag so callers using
+	// a designated initializer (which leaves enabled at 0) get an enabled one.
+	bp.enabled = true;
+
+	// Re-adding at an address that already has a breakpoint replaces the
+	// existing entry, so a new `if` clause takes effect. Free the old entry's
+	// condition first, then overwrite it in place (its slot, hence its
+	// position in the list, is preserved).
+	int existing = find_user_bp(bp.pc, bp.bank, bp.x16Bank);
+	if (existing >= 0) {
+		if (user_bp[existing].cond) dbg_expr_free(user_bp[existing].cond);
+		user_bp[existing] = bp;
 		return true;
 	}
+
 	if (user_bp_count >= DBG_MAX_BREAKPOINTS) {
 		if (bp.cond) dbg_expr_free(bp.cond);
 		return false; // table full
 	}
 	user_bp[user_bp_count++] = bp;
+	return true;
+}
+
+bool dbg_breakpoint_set_enabled(int pc, uint8_t bank, int x16Bank, bool enabled) {
+	int i = find_user_bp(pc, bank, x16Bank);
+	if (i < 0) {
+		return false;
+	}
+	user_bp[i].enabled = enabled;
 	return true;
 }
 

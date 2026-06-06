@@ -124,7 +124,7 @@ class X16dbg:
 	def _parse_response(self, body):
 		"""Split a prompt-terminated body into (data, events, header, response).
 
-		Header lines (`^[1-4]: \\[…\\]`) are separated from data lines so
+		Header lines (`^[1-4]: \\[...\\]`) are separated from data lines so
 		assertions on command output don't trip on the header that
 		precedes every prompt.
 		"""
@@ -361,10 +361,20 @@ def main():
 		data, _ = d.cmd("lbp")
 		check("lbp lists all set breakpoints in order",
 		      data == ["00: 1111", "00: 2222", "00: 3333"], data)
-		d.cmd("sbp 00 2222")  # duplicate
+		d.cmd("sbp 00 2222")  # re-add same address, no condition
 		data, _ = d.cmd("lbp")
-		check("re-adding a breakpoint is idempotent",
+		check("re-adding the same address does not duplicate the entry",
 		      data == ["00: 1111", "00: 2222", "00: 3333"], data)
+		# Re-adding with a different condition replaces the entry in place
+		# (same position, new condition) rather than being ignored.
+		d.cmd("sbp 00 2222 if a == $01")
+		data, _ = d.cmd("lbp")
+		check("re-adding with a condition replaces it in place",
+		      data == ["00: 1111", "00: 2222  if a == $01", "00: 3333"], data)
+		d.cmd("sbp 00 2222 if a == $02")
+		data, _ = d.cmd("lbp")
+		check("re-adding again updates the condition",
+		      data == ["00: 1111", "00: 2222  if a == $02", "00: 3333"], data)
 		d.cmd("cbp 00 2222")  # remove the middle one
 		data, _ = d.cmd("lbp")
 		check("cbp removes one without disturbing the rest",
@@ -374,9 +384,63 @@ def main():
 			check("cbp on a missing breakpoint errors", False, "no ERR")
 		except AssertionError:
 			check("cbp on a missing breakpoint errors", True)
+
+		# Enable / disable without removing (bp <bank> <addr> on|off).
+		d.cmd("bp 00 1111 off")
+		data, _ = d.cmd("lbp")
+		check("bp off marks a breakpoint disabled in lbp",
+		      data == ["00: 1111 off", "00: 3333"], data)
+		d.cmd("bp 00 1111 on")
+		data, _ = d.cmd("lbp")
+		check("bp on clears the disabled mark",
+		      data == ["00: 1111", "00: 3333"], data)
+		try:
+			d.cmd("bp 00 9999 on")
+			check("bp on a missing breakpoint errors", False, "no ERR")
+		except AssertionError:
+			check("bp on a missing breakpoint errors", True)
+
 		d.cmd("cbp *")  # clear all
 		data, _ = d.cmd("lbp")
 		check("cbp * clears every breakpoint", data == [], data)
+
+		# A disabled breakpoint does not stop the CPU; re-enabling restores it.
+		arm(d, "a9 aa ea ea db")          # LDA #$aa ; NOP ; NOP ; STP
+		d.cmd("sbp 00 0502")
+		d.cmd("bp 00 0502 off")
+		events = cnt_until_event(d, "* BRK STP")
+		check("disabled breakpoint does not fire (runs to STP)",
+		      any(e.startswith("* BRK STP") for e in events)
+		      and not any(e.startswith("* BRK BREAKPOINT") for e in events), events)
+		arm(d, "a9 aa ea ea db")
+		d.cmd("sbp 00 0502")
+		d.cmd("bp 00 0502 on")
+		events = cnt_until_event(d, "* BRK BREAKPOINT 00 0502")
+		check("re-enabled breakpoint fires again",
+		      any(e.startswith("* BRK BREAKPOINT 00 0502") for e in events), events)
+		d.cmd("cbp *")
+
+		# A breakpoint in the banked $A000+ window must store the named bank as
+		# its x16Bank, not -1; the bug stored -1 for every address, so the hit
+		# test (which compares the live bank for the address) could never match
+		# a banked breakpoint. Assert the stored x16Bank via `st`, which is
+		# deterministic: an address below $A000 stores -1, one in the banked
+		# window stores the named bank. (A live fire test in the banked window
+		# is not deterministic here, because the bank mapped at $A000 is mutable
+		# and the kernal changes it under a free-running CPU.)
+		d.cmd("brk")
+		d.cmd("sbp 00 0502")   # unbanked: x16bank -1
+		d.cmd("sbp 02 a100")   # banked window: x16bank 2
+		data, _ = d.cmd("st")
+		bp_lines = [l.split("bp", 1)[1].strip() for l in data if l.startswith("bp ")]
+		check("unbanked breakpoint stores x16bank=-1",
+		      any("00:0502" in l and "x16bank=-1" in l for l in bp_lines), bp_lines)
+		check("banked-window breakpoint stores the named bank (x16bank=2)",
+		      any("02:a100" in l and "x16bank=2" in l for l in bp_lines), bp_lines)
+		d.cmd("cbp *")
+		# These tests left the PC inside the injected routine; reset the CPU so
+		# the next section starts from a clean, free-running state.
+		d.cmd("rst")
 
 		print()
 		print("--- execution control ---")
