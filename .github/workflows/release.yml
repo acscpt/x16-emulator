@@ -97,12 +97,14 @@ jobs:
 
   build-macos:
     # Untested: compiled and uploaded, not run by the maintainer.
+    # arm64 only. Intel (macos-13) is omitted: GitHub's free Intel macOS
+    # runners are deprecated and queue indefinitely, hanging the run for a
+    # day before the timeout cancels it. Re-add an x86_64/macos-13 matrix
+    # entry if those runners become usable again.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: x86_64
-            runner: macos-13
           - arch: arm64
             runner: macos-14
     runs-on: ${{ matrix.runner }}
@@ -157,11 +159,10 @@ jobs:
           ## Binaries
 
           ### Tested
-          - **Linux x86_64** (`...-linux-x86_64.tar.gz`) — needs `libsdl2` and `libfluidsynth` installed (`apt install libsdl2-2.0-0 libfluidsynth3`).
-          - **Windows x86_64** (`...-windows-x86_64.zip`) — self-contained; the required SDL2 and FluidSynth DLLs are bundled.
+          - **Linux x86_64** (`...-linux-x86_64.tar.gz`) -- needs `libsdl2` and `libfluidsynth` installed (`apt install libsdl2-2.0-0 libfluidsynth3`).
+          - **Windows x86_64** (`...-windows-x86_64.zip`) -- self-contained; the required SDL2 and FluidSynth DLLs are bundled.
 
           ### Untested (compiled by CI, not run by the maintainer)
-          - **macOS x86_64** (`...-macos-x86_64.tar.gz`)
           - **macOS arm64** (`...-macos-arm64.tar.gz`)
           - Need `brew install sdl2 fluid-synth`.
 
