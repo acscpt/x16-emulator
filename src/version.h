@@ -3,5 +3,5 @@
 // All rights reserved. License: 2-clause BSD
 
 #define VER "50"
-#define VER_NAME "next-acscpt.1"
-#define VER_INFO "### Release 50 (\"next-acscpt.1\")"
+#define VER_NAME "next-acscpt.2"
+#define VER_INFO "### Release 50 (\"next-acscpt.2\")"
