@@ -9,6 +9,8 @@ Newest entries first.
 
 ## [Unreleased]
 
+## [acscpt.2] - 2026-06-06
+
 ### Added
 
 - **Breakpoint enable/disable: `bp <bank> <addr> on|off`.** Mute a breakpoint without removing it, the same way `wp <id> on|off` mutes a watchpoint, so one breakpoint can be silenced at a time while bisecting. A disabled breakpoint keeps its definition and condition, does not stop the CPU, and still shows in `lbp` marked ` off`.
@@ -23,7 +25,7 @@ Newest entries first.
 
 - **Breakpoints in the `$A000-$FFFF` banked window (ROM and banked RAM) never fired.** `sbp` stored every breakpoint with `x16Bank = -1`, but the hit test compares against the live bank reported for the address, so a banked breakpoint could not match. `sbp` now stores the named bank for addresses at `$A000` and above (matching how `swp` and the SDL `tb` already work); low addresses stay unbanked. `bp on|off` keys the same way.
 
-- Two `-debugstdio` startup-breakpoint structs in `main.c` were built uninitialised, leaving the condition pointer as garbage that a later breakpoint hit or `cbp` could dereference. They are now zero-initialised.
+- Two startup-breakpoint structs in `main.c` were built uninitialised. This was harmless until the fork added a condition pointer to `struct breakpoint`; that pointer was then left as garbage that a later breakpoint hit or `cbp` could dereference. They are now zero-initialised.
 
 ## [acscpt.1] - 2026-05-31
 
