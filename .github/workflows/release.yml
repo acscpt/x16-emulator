@@ -175,13 +175,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          # --target master ties the release to the default branch so the
-          # repo landing page's Releases section shows it. Tags are cut from
-          # master; without this the release can end up associated with the
-          # wrong branch and the section stays empty.
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --target master \
             --title "$TAG" \
             --notes-file notes.md \
             artifacts/*/*

@@ -4,8 +4,8 @@ How fork releases are versioned, branched, and published. Fork-specific; not par
 
 ## Branch model
 
-- **`develop`** is the integration/working branch. It stays a clean "upstream base + fork changes": `version.h` is kept byte-identical to upstream so upstream syncs never conflict on it. Features land here.
-- **`master`** is the release vehicle: the only place the fork version stamp lives, and where release tags are cut. It is also the GitHub default branch, so the landing page's Releases section is populated (that section only shows releases whose tag is reachable from the default branch, and the tags live on master).
+- **`develop`** is the integration branch and the fork's default. It stays a clean "upstream base + fork changes": `version.h` is kept byte-identical to upstream so upstream syncs never conflict on it. Features land here.
+- **`master`** is the release vehicle: the only place the fork version stamp lives, and where release tags are cut.
 - **`upstream-master`** mirrors upstream, for syncing.
 
 ## Versioning
