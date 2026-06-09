@@ -9,6 +9,8 @@ Newest entries first.
 
 ## [Unreleased]
 
+## [acscpt.4] - 2026-06-09
+
 ### Fixed
 
 - **`-debugstdio` memory commands ignored the explicit `<bank>` in the `$A000-$BFFF` RAM window.** `mem`, `wmm`, `fil`, and `find` operated on the CPU's live RAM bank instead of the bank named in the command, contradicting the documented contract that an explicit bank reads or writes that bank regardless of CPU selection. Reads (`mem`/`find`) now pass the bank as the X16 window bank; writes (`wmm`/`fil`) target the named bank's BRAM directly. Cross-bank inspection no longer requires staging the live bank register and disturbing the running program. Low RAM (`$0000-$9FFF`) still ignores the bank, as documented.
