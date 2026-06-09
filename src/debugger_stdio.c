@@ -759,7 +759,7 @@ static void cmd_fil(int argc, char **argv) {
 		err_msg("count must be hex");
 		return;
 	}
-	dbg_fill_mem((uint8_t)bank, (uint16_t)addr, (uint8_t)value, (uint16_t)count);
+	dbg_fill_mem((uint8_t)bank, (uint16_t)addr, (uint8_t)value, (uint16_t)count, (int16_t)bank);
 	rdy();
 }
 
@@ -809,7 +809,7 @@ static void cmd_find(int argc, char **argv) {
 	for (uint32_t off = 0; (int32_t)(len - off) >= pat_len; off++) {
 		bool match = true;
 		for (int i = 0; i < pat_len; i++) {
-			if (dbg_read_mem((uint8_t)bank, (uint16_t)(start + off + i), -1) != pattern[i]) {
+			if (dbg_read_mem((uint8_t)bank, (uint16_t)(start + off + i), (int16_t)bank) != pattern[i]) {
 				match = false;
 				break;
 			}
@@ -862,7 +862,7 @@ static void cmd_mem(int argc, char **argv) {
 	while (count > 0) {
 		int line = count > 16 ? 16 : (int)count;
 		for (int i = 0; i < line; i++) {
-			bytes[i] = dbg_read_mem((uint8_t)bank, (uint16_t)(cur + i), -1);
+			bytes[i] = dbg_read_mem((uint8_t)bank, (uint16_t)(cur + i), (int16_t)bank);
 		}
 		print_hex_ascii_line(cur, 4, bytes, line);
 		cur   += line;
@@ -881,7 +881,9 @@ static void cmd_wmm(int argc, char **argv) {
 	for (int i = 2; i < argc; i++) {
 		uint32_t v;
 		if (!parse_hex(argv[i], &v, 0xff)) { err_msg("bad byte"); return; }
-		dbg_write_mem((uint8_t)bank, (uint16_t)(addr + i - 2), (uint8_t)v);
+		// Direct, bank-aware array write (bypasses write6502, no I/O side
+		// effects), honoring <bank> in the $A000-$BFFF window.
+		dbg_fill_mem_buffer((uint16_t)(addr + i - 2), (int)bank, (uint8_t)v, 1, 1);
 	}
 	rdy();
 }
@@ -1410,13 +1412,19 @@ static void dispatch_line(char *line) {
 		line[--len] = '\0';
 	}
 	// Tokenize on whitespace. Single-threaded frontend, so strtok is fine.
-	char *argv[16];
+	// The cap bounds the argument count (e.g. bulk `wmm` byte lists); overflow
+	// is an explicit error rather than a silent truncation of trailing bytes.
+	char *argv[128];
 	int argc = 0;
 	char *verb = strtok(line, " \t");
 	if (!verb) return; // empty / whitespace-only line: ignore silently per spec
 	for (char *p = verb; *p; p++) *p = (char)tolower((unsigned char)*p);
 	char *tok;
-	while ((tok = strtok(NULL, " \t")) != NULL && argc < 16) {
+	while ((tok = strtok(NULL, " \t")) != NULL) {
+		if (argc >= (int)(sizeof(argv) / sizeof(argv[0]))) {
+			err_msg("too many arguments");
+			return;
+		}
 		argv[argc++] = tok;
 	}
 	for (int i = 0; commands[i].name; i++) {

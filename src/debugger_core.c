@@ -75,9 +75,9 @@ static dbg_watch_hit_t pending_hit;
 static dbg_watch_hit_t last_hit;
 static bool            have_watch_hit = false;
 
-// Set around debugger pokes (dbg_write_mem / dbg_fill_mem) so their writes,
-// which also go through write6502, do not trip watchpoints. Only genuine
-// CPU writes should fire them. Reads need no equivalent: the debugger reads
+// Set around debugger pokes (dbg_fill_mem) so their writes, when they go
+// through write6502, do not trip watchpoints. Only genuine CPU writes should
+// fire them. Reads need no equivalent: the debugger reads
 // through real_read6502 (debugOn), never the hooked public read6502.
 static bool            watch_suppress = false;
 
@@ -712,16 +712,23 @@ uint8_t dbg_read_mem(uint8_t bank, uint16_t addr, int16_t x16Bank) {
 	return real_read6502(addr, bank, true, x16Bank);
 }
 
-void dbg_write_mem(uint8_t bank, uint16_t addr, uint8_t value) {
-	watch_suppress = true;
-	write6502(addr, bank, value);
-	watch_suppress = false;
-}
-
-void dbg_fill_mem(uint8_t bank, uint16_t addr, uint8_t value, uint16_t len) {
+void dbg_fill_mem(uint8_t bank, uint16_t addr, uint8_t value, uint16_t len, int16_t x16Bank) {
 	watch_suppress = true;
 	for (uint16_t i = 0; i < len; i++) {
-		write6502((uint16_t)(addr + i), bank, value);
+		uint16_t a = (uint16_t)(addr + i);
+		// Honor an explicit X16 bank in the $A000-$BFFF window by writing BRAM
+		// directly (gen1), so fil can target any bank without disturbing the
+		// CPU's live banking. Everything else -- low RAM, the I/O region, the
+		// ROM window, and gen2's flat RAM -- still routes through write6502 so
+		// fil keeps its documented CPU-path side effects (the RAM window has
+		// none to lose).
+		if (!is_gen2 && x16Bank >= 0 && a >= 0xA000 && a < 0xC000) {
+			if ((uint16_t)x16Bank < num_ram_banks) {
+				BRAM[((uint16_t)x16Bank << 13) + (a - 0xA000)] = value;
+			}
+		} else {
+			write6502(a, bank, value);
+		}
 	}
 	watch_suppress = false;
 }
@@ -734,7 +741,9 @@ void dbg_fill_mem_buffer(uint32_t addr, int x16bank, uint8_t value, uint32_t cou
 		if (addr >= 0xC000 && addr < 0x10000) {
 			// ROM range: no-op (matches SDL `f`).
 		} else if (addr >= 0xA000 && addr < 0xC000) {
-			BRAM[(x16bank << 13) + addr - 0xA000] = value;
+			if (x16bank < num_ram_banks) {
+				BRAM[(x16bank << 13) + addr - 0xA000] = value;
+			}
 		} else if ((addr >> 16) < num_banks) {
 			RAM[addr] = value;
 		}
