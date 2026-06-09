@@ -9,6 +9,14 @@ Newest entries first.
 
 ## [Unreleased]
 
+## [acscpt.3] - 2026-06-09
+
+### Fixed
+
+- **`-debugstdio` froze VERA, hanging any VBL-paced program.** The mode forced `headless`, which also gated off the per-instruction VERA tick (`video_step`), so the VBL flag at `$9F27`, the raster counter, and the frame ISR never advanced. The CPU ran but anything pacing off VBL -- a very common 6502 graphics idiom, polled or IRQ-driven -- spun forever, and `scr` captured stale frames. VERA now ticks under `-debugstdio` while the mode stays genuinely headless (no SDL, no window); only display presentation (`video_update`) and audio remain gated on a real output. `-testbench` is unchanged.
+
+- **The one-shot Rockwell-instruction warning now goes to stderr in `-debugstdio` mode** instead of stdout, where it collided with the REPL protocol stream and could corrupt a command's parsed output. Consistent with the existing `-echo` / `-log` / `-trace` muting.
+
 ## [acscpt.2] - 2026-06-06
 
 ### Added

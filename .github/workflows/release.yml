@@ -97,12 +97,14 @@ jobs:
 
   build-macos:
     # Untested: compiled and uploaded, not run by the maintainer.
+    # arm64 only. Intel (macos-13) is omitted: GitHub's free Intel macOS
+    # runners are deprecated and queue indefinitely, hanging the run for a
+    # day before the timeout cancels it. Re-add an x86_64/macos-13 matrix
+    # entry if those runners become usable again.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: x86_64
-            runner: macos-13
           - arch: arm64
             runner: macos-14
     runs-on: ${{ matrix.runner }}
@@ -133,6 +135,10 @@ jobs:
     needs: [build-linux-x86_64, build-windows-x86_64]
     runs-on: ubuntu-latest
     steps:
+      # Checkout is needed so the changelog is available to embed in the notes.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -140,10 +146,30 @@ jobs:
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          cat > notes.md <<'EOF'
-          A fork of the [Commander X16 emulator](https://github.com/X16Community/x16-emulator) adding a headless, scriptable stdio debugger (`-debugstdio`): breakpoints, read/write memory watchpoints, conditional breakpoints and watchpoints, and screen capture. See `FORK-CHANGES.md` for the full list of changes.
+          # Pull this release's section out of FORK-CHANGES.md. The tag ends in
+          # the changelog version key (r50-next-acscpt.2 -> acscpt.2); its entry
+          # runs from "## [acscpt.2] ..." up to the next "## [" heading.
+          VER="${TAG##*-}"
+          awk -v ver="$VER" '
+            $0 ~ "^## \\[" ver "\\]" { grab = 1; next }
+            grab && /^## \[/ { grab = 0 }
+            grab { print }
+          ' FORK-CHANGES.md > changelog.md
+          # Strip leading/trailing blank lines from the extracted section.
+          awk 'NF{last=NR} {line[NR]=$0} END{first=1; while(first<last && line[first]==""){first++}; for(i=first;i<=last;i++) print line[i]}' changelog.md > changelog.trim && mv changelog.trim changelog.md
+          # Fall back to a link if the section is missing or empty.
+          if ! grep -q "[^[:space:]]" changelog.md; then
+            echo "See [FORK-CHANGES.md](__REPO__/blob/__TAG__/FORK-CHANGES.md) for the changes in this release." > changelog.md
+          fi
 
-          Debugger documentation: the [REPL user guide](__REPO__/blob/__TAG__/docs/debug_repl.md) and the [command reference](__REPO__/blob/__TAG__/docs/debug_repl_commands.md).
+          cat > notes.md <<'EOF'
+          A fork of the [Commander X16 emulator](https://github.com/X16Community/x16-emulator) adding a headless, scriptable stdio debugger (`-debugstdio`): breakpoints, read/write memory watchpoints, conditional breakpoints and watchpoints, and screen capture.
+
+          Debugger documentation: the [REPL user guide](__REPO__/blob/__TAG__/docs/debug_repl.md) and the [command reference](__REPO__/blob/__TAG__/docs/debug_repl_commands.md). Full change history: [FORK-CHANGES.md](__REPO__/blob/__TAG__/FORK-CHANGES.md).
+
+          ## Changes in this release
+
+          __CHANGELOG__
 
           ## You need a ROM (download it separately)
 
@@ -157,16 +183,20 @@ jobs:
           ## Binaries
 
           ### Tested
-          - **Linux x86_64** (`...-linux-x86_64.tar.gz`) — needs `libsdl2` and `libfluidsynth` installed (`apt install libsdl2-2.0-0 libfluidsynth3`).
-          - **Windows x86_64** (`...-windows-x86_64.zip`) — self-contained; the required SDL2 and FluidSynth DLLs are bundled.
+          - **Linux x86_64** (`...-linux-x86_64.tar.gz`) -- needs `libsdl2` and `libfluidsynth` installed (`apt install libsdl2-2.0-0 libfluidsynth3`).
+          - **Windows x86_64** (`...-windows-x86_64.zip`) -- self-contained; the required SDL2 and FluidSynth DLLs are bundled.
 
           ### Untested (compiled by CI, not run by the maintainer)
-          - **macOS x86_64** (`...-macos-x86_64.tar.gz`)
           - **macOS arm64** (`...-macos-arm64.tar.gz`)
           - Need `brew install sdl2 fluid-synth`.
 
           Built with FluidSynth (MIDI) enabled and `-trace` disabled. Trace embeds ROM-derived listings, so it is a local build only feature; build from source with `-DENABLE_TRACE=ON` if you need it.
           EOF
+          # Splice the extracted changelog in where the marker sits.
+          sed -i '/__CHANGELOG__/{
+          r changelog.md
+          d
+          }' notes.md
           # Point the doc links at this repo and tag (docs frozen at the release).
           sed -i "s|__REPO__|${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}|g; s|__TAG__|${TAG}|g" notes.md
       - name: Create release

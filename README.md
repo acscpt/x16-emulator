@@ -2,10 +2,10 @@
   <img src="./.gh/logo.png" />
 </p>
 
-[![Build Status](https://github.com/x16community/x16-emulator/actions/workflows/build.yml/badge.svg)](https://github.com/x16community/x16-emulator/actions/workflows/build.yml)
-[![Release](https://img.shields.io/github/v/release/x16community/x16-emulator)](https://github.com/x16community/x16-emulator/releases)
-[![License: BSD-Clause](https://img.shields.io/github/license/x16community/x16-emulator)](./LICENSE)
-[![Contributors](https://img.shields.io/github/contributors/x16community/x16-emulator.svg)](https://github.com/x16community/x16-emulator/graphs/contributors)
+[![Fork CI](https://github.com/acscpt/x16-emulator/actions/workflows/fork-ci.yml/badge.svg?branch=develop)](https://github.com/acscpt/x16-emulator/actions/workflows/fork-ci.yml)
+[![Release](https://img.shields.io/github/v/release/acscpt/x16-emulator)](https://github.com/acscpt/x16-emulator/releases)
+[![License: BSD-Clause](https://img.shields.io/github/license/acscpt/x16-emulator)](./LICENSE)
+[![Contributors](https://img.shields.io/github/contributors/acscpt/x16-emulator.svg)](https://github.com/acscpt/x16-emulator/graphs/contributors)
 
 This is an emulator for the Commander X16 computer system. It only depends on SDL2 and should compile on all modern operating systems.
 

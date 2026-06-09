@@ -121,6 +121,7 @@ extern void stop6502(uint16_t address, uint8_t bank);
 extern void vp6502();
 extern uint8_t memory_get_ram_bank();
 extern uint8_t memory_get_rom_bank();
+extern bool debugger_stdio_mode;
 
 static void (*addrtable_c02[256])();
 static void (*addrtable_c816[256])();
@@ -148,12 +149,15 @@ void rockwell_warning(const char *instruction) {
         pc_bank = memory_get_rom_bank();
     }
 
-    printf("Warning: encountered Rockwell instruction %s at $%02x:%04x.\n", instruction, pc_bank, opcode_addr);
-    printf("\tFuture Commander X16 hardware may ship with a 65C816 CPU,\n");
-    printf("\twhich does not support these instructions.\n");
-    printf("\tThis will be the only warning given for Rockwell\n");
-    printf("\tinstructions until the emulator is relaunched.\n");
-    printf("\tPass -rockwell to the command line to suppress this warning.\n\n");
+    // In -debugstdio mode stdout is the REPL protocol channel, so route this
+    // warning to stderr to avoid corrupting a command's parsed output.
+    FILE *out = debugger_stdio_mode ? stderr : stdout;
+    fprintf(out, "Warning: encountered Rockwell instruction %s at $%02x:%04x.\n", instruction, pc_bank, opcode_addr);
+    fprintf(out, "\tFuture Commander X16 hardware may ship with a 65C816 CPU,\n");
+    fprintf(out, "\twhich does not support these instructions.\n");
+    fprintf(out, "\tThis will be the only warning given for Rockwell\n");
+    fprintf(out, "\tinstructions until the emulator is relaunched.\n");
+    fprintf(out, "\tPass -rockwell to the command line to suppress this warning.\n\n");
 
     warn_rockwell = false;
 }
