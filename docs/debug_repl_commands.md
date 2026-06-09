@@ -998,6 +998,8 @@ RDY
 
 Because writes go through the CPU's path, side effects can occur: writing to VERA's data port advances its address pointer, writing to a banking register changes the CPU's bank selection, and so on. The command is useful precisely when those side effects are wanted, and confusing when they are not.
 
+An explicit `<bank>` is honored in the `$A000-$BFFF` RAM window: the bytes land in that bank directly, not the CPU's live one, so `fil` can seed any bank without changing the running program's banking. That window has no I/O side effects, so nothing is lost by writing it directly.
+
 **Associated commands**: [`wmm`](#wmm), [`f`](#f), [`mem`](#mem)
 
 [^ Index](#index)

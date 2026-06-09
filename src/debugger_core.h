@@ -315,10 +315,11 @@ void dbg_get_vera(dbg_vera_snapshot_t *out);
 // without changing CPU state (matches the SDL "m <bank>:<addr>" feature).
 uint8_t dbg_read_mem(uint8_t bank, uint16_t addr, int16_t x16Bank);
 
-// Writes always go through write6502, which targets the currently-selected
-// bank.
-void    dbg_write_mem(uint8_t bank, uint16_t addr, uint8_t value);
-void    dbg_fill_mem(uint8_t bank, uint16_t addr, uint8_t value, uint16_t len);
+// Fill `len` bytes with `value` through the CPU write path (write6502), so
+// I/O-region writes hit the emulated peripherals. An explicit X16 bank
+// (x16Bank >= 0) is honored in the $A000-$BFFF window by writing BRAM
+// directly; pass -1 to target the CPU's currently-selected RAM bank.
+void    dbg_fill_mem(uint8_t bank, uint16_t addr, uint8_t value, uint16_t len, int16_t x16Bank);
 
 // Fill RAM / BRAM directly, bypassing write6502 (and therefore I/O
 // side-effects in the $9F00-$9FFF range). Mirrors the SDL `f` command's
