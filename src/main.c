@@ -1783,7 +1783,13 @@ emulator_loop(void *param)
 		if (has_via2) {
 			via2_step(clocks);
 		}
-		if (!headless) {
+		// VERA's scanline timing (VBL flag, raster counter, ISR) is driven from
+		// here, not from the SDL render path, and writes only to the internal
+		// framebuffer -- no SDL needed. -debugstdio runs headless (no window),
+		// but must still tick VERA so VBL-paced 6502 programs make progress;
+		// without this they spin forever polling $9F27 bit 0. Presentation
+		// (video_update, below) stays gated on a real display.
+		if (!headless || debugger_stdio_mode) {
 			new_frame |= video_step(MHZ, clocks, false);
 		}
 

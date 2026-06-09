@@ -9,6 +9,10 @@ Newest entries first.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`-debugstdio` froze VERA, hanging any VBL-paced program.** The mode forced `headless`, which also gated off the per-instruction VERA tick (`video_step`), so the VBL flag at `$9F27`, the raster counter, and the frame ISR never advanced. The CPU ran but anything pacing off VBL -- a very common 6502 graphics idiom, polled or IRQ-driven -- spun forever, and `scr` captured stale frames. VERA now ticks under `-debugstdio` while the mode stays genuinely headless (no SDL, no window); only display presentation (`video_update`) and audio remain gated on a real output. `-testbench` is unchanged.
+
 ## [acscpt.2] - 2026-06-06
 
 ### Added
